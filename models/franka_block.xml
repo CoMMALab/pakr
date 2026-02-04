@@ -1,0 +1,88 @@
+<?xml version="1.0" ?>
+<mujoco model="franka_block">
+
+    <compiler angle="radian" coordinate="local"/>
+
+    <option
+        timestep="0.02"
+        gravity="0 0 -9.81"
+        iterations="1"
+        ls_iterations="4"
+        solver="Newton"
+        jacobian="dense"
+        integrator="Euler"/>
+
+    <!-- Give all geoms mass automatically -->
+    <default>
+        <geom density="1000"/>
+    </default>
+
+    <asset>
+        <material name="table_mat" rgba="0.8 0.8 0.8 1"/>
+        <material name="block_mat" rgba="0.9 0.2 0.2 1"/>
+    </asset>
+
+    <worldbody>
+
+        <!-- Table -->
+        <body name="table" pos="0 0 0">
+            <geom type="box" size="0.5 0.5 0.05" material="table_mat"/>
+        </body>
+
+        <!-- Franka-like arm -->
+        <body name="franka_base" pos="0 0 0.05">
+
+            <joint name="joint1" type="hinge" axis="0 0 1"/>
+            <geom type="capsule" fromto="0 0 0 0 0 0.1" size="0.02"/>
+
+            <body pos="0 0 0.1">
+                <joint name="joint2" type="hinge" axis="0 1 0"/>
+                <geom type="capsule" fromto="0 0 0 0 0 0.2" size="0.02"/>
+
+                <body pos="0 0 0.2">
+                    <joint name="joint3" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" fromto="0 0 0 0 0 0.2" size="0.02"/>
+
+                    <body pos="0 0 0.2">
+                        <joint name="joint4" type="hinge" axis="1 0 0"/>
+                        <geom type="capsule" fromto="0 0 0 0 0 0.2" size="0.02"/>
+
+                        <body pos="0 0 0.2">
+                            <joint name="joint5" type="hinge" axis="0 1 0"/>
+                            <geom type="capsule" fromto="0 0 0 0 0 0.15" size="0.02"/>
+
+                            <body pos="0 0 0.15">
+                                <joint name="joint6" type="hinge" axis="1 0 0"/>
+                                <geom type="capsule" fromto="0 0 0 0 0 0.1" size="0.02"/>
+
+                                <body pos="0 0 0.1">
+                                    <joint name="joint7" type="hinge" axis="0 1 0"/>
+                                    <geom type="capsule" fromto="0 0 0 0 0 0.1" size="0.02"/>
+                                </body>
+                            </body>
+                        </body>
+                    </body>
+                </body>
+            </body>
+        </body>
+
+        <!-- Block -->
+        <body name="block" pos="0.5 0 0.05">
+            <geom type="box" size="0.05 0.05 0.05" material="block_mat"/>
+            <freejoint name="block_free"/>
+        </body>
+
+    </worldbody>
+
+    <!-- One actuator per joint -->
+    <actuator>
+        <general joint="joint1" ctrlrange="-150 150"/>
+        <general joint="joint2" ctrlrange="-150 150"/>
+        <general joint="joint3" ctrlrange="-150 150"/>
+        <general joint="joint4" ctrlrange="-150 150"/>
+        <general joint="joint5" ctrlrange="-150 150"/>
+        <general joint="joint6" ctrlrange="-150 150"/>
+        <general joint="joint7" ctrlrange="-150 150"/>
+    </actuator>
+
+</mujoco>

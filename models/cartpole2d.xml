@@ -1,0 +1,37 @@
+<mujoco model="Cartpole">
+  <compiler angle="radian" inertiafromgeom="true"/>
+  
+  <default>
+    <joint armature="0" damping="0" frictionloss="0" type="hinge"/>
+    <geom contype="0" conaffinity="0" friction="1 0.1 0.1" density="1000"/>
+    <site size="0.01"/>
+  </default>
+  
+  <!-- Optimized for MJX performance -->
+  <option 
+    timestep="0.02" 
+    iterations="1" 
+    ls_iterations="4"
+    solver="Newton"
+    jacobian="dense"
+    integrator="Euler"/>
+  
+  <worldbody>
+    <!-- Ground plane with no collision -->
+    <geom name="ground" type="plane" size="0 0 0.1" zaxis="0 0 1" contype="0" conaffinity="0"/>
+    
+    <body name="cart" pos="0 0 0">
+      <joint name="slider" type="slide" axis="1 0 0" pos="0 0 0" range="-4.8 4.8"/>
+      <geom name="cart" type="box" size="0.2 0.1 0.1" mass="1.0"/>
+      
+      <body name="pole" pos="0 0 0">
+        <joint name="hinge" type="hinge" axis="0 1 0" pos="0 0 0" range="-1 1"/>
+        <geom name="pole" type="capsule" size="0.02 0.6" pos="0 0 0.6" mass="0.1"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="force_actuator" joint="slider" ctrlrange="-10.0 10.0"/>
+  </actuator>
+</mujoco>
