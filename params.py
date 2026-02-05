@@ -174,11 +174,11 @@ goal_qc = Position(
     z = 90.0
 )
 
-#batch_size = 16384
+batch_size = 16384
 #batch_size = 32768
 #batch_size = 131072
-batch_size = 65536
-#batch_size = 2000
+#batch_size = 65536
+#batch_size = 1024
 seed = 0
 time_to_evolve = 10
 # Safe params
@@ -288,6 +288,36 @@ sst_params_QC = SSTparams(
     sparsity = 0,
 )
 
+frb_motion_constraints = MotionConstraints(
+    max_vel=1.0,       # max joint angle for sampling
+    min_vel=-1.0,      # min joint angle
+    max_accel=0.5,     # unused for now
+    min_accel=-0.5,
+    max_torque=5.0,    # used for action sampling
+    min_torque=-5.0,
+    max_yaw_rate=0.0,  # unused
+    min_yaw_rate=0.0,
+    max_pitch_rate=0.0,
+    min_pitch_rate=0.0,
+    max_yaw=0.0,
+    min_yaw=0.0,
+    max_pitch=0.0,
+    min_pitch=0.0,
+    max_thrust=0.0,
+    min_thrust=0.0,
+    max_roll=0.0,
+    min_roll=0.0,
+    max_angle_vel=0.0,
+    min_angle_vel=0.0
+)
+
+# Workspace bounds for the block
+frb_bounds = Bounds(
+    min_x=-0.2, max_x=0.2,
+    min_y=-0.2, max_y=0.2,
+    min_z=0.0, max_z=0.3
+)
+
 callables_FRB = Callables(
     prop_fn=None,               # filled at runtime
     valid_fn=lambda *args: True, # unused
@@ -297,10 +327,10 @@ callables_FRB = Callables(
 )
 
 sim_params_FRB = MJXparams(
-    motion_constraints=MotionConstraints(),  # torques bounded later
+    motion_constraints=frb_motion_constraints,  # torques bounded later
     physics_constants=PhysicsConstants(),
     batch_size=batch_size,
-    bounds=Bounds(),        # unused for now
+    bounds=frb_bounds,        # unused for now
     dims=27,
     action_dims=7,
     dt=0.02,                # MJX timestep
@@ -322,3 +352,4 @@ sst_params_FRB = SSTparams(
     time_to_evolve=10,
     sparsity=0,
 )
+

@@ -332,6 +332,40 @@ def nearest_neighbor_masked(
 
     return indices, dists
 
+@partial(jax.jit, static_argnums=(0, 1))
+def nearest_neighbor_mjx( # for some fuckin reason this doesnt need the .T idk
+    sim_params,
+    dist_fn,
+    ref_points: jnp.ndarray,     # (MAX_TREE_SIZE, dims)
+    tree_size: jnp.ndarray,      # scalar int
+    query_points: jnp.ndarray,   # (batch, dims)
+):
+    """
+    Masked nearest neighbor over padded tree.
+
+    Returns:
+        indices : (batch,)
+        dists   : (batch,)
+    """
+    B = query_points.shape[0]
+    Nmax = ref_points.shape[0]
+
+    # Compute pairwise diffs → (B, Nmax, D)
+    diff = query_points[:, None, :] - ref_points[None, :, :]  # (B, Nmax, D)
+
+    # Compute distances → (B, Nmax)
+    dist2 = dist_fn(sim_params, diff)  # should return shape (B, Nmax)
+
+    # Mask out invalid tree entries
+    valid_mask = jnp.arange(Nmax) < tree_size  # (Nmax,)
+    dist2 = jnp.where(valid_mask[None, :], dist2, jnp.inf)  # broadcasts over B
+
+    # Nearest neighbor
+    indices = jnp.argmin(dist2, axis=1)  # (B,)
+    dists = jnp.take_along_axis(dist2, indices[:, None], axis=1).squeeze(1)  # (B,)
+
+    return indices, dists
+
 
 @partial(jax.jit, static_argnums=(0, 1))
 def dist_all(sim_params, dist_fn, ref_points: jnp.ndarray, query_points: jnp.ndarray):
@@ -447,80 +481,97 @@ def recreate_trajectory(state0, actions, sim_params, prop_fn):
 ###########################
 # MJX helpers
 ###########################
+
+# -----------------------------
+# Sample initial states
+# -----------------------------
 @partial(jax.jit, static_argnums=(0,))
-def sample_FRANKA(sim_params, key):
+def sample_FRB(sim_params, key):
     B = sim_params.batch_size
     keys = jax.random.split(key, 4)
 
-    # Arm joints (biased around nominal)
-    q_nom = sim_params.q_nominal  # (7,)
-    q_range = sim_params.q_range  # (7,)
-    q = q_nom + jax.random.uniform(
-        keys[0], (B, 7), minval=-q_range, maxval=q_range
-    )
+    # ----------------------------
+    # Arm joints (7 DOF)
+    # ----------------------------
+    q_nom = jnp.full((7,), (sim_params.motion_constraints.max_vel + sim_params.motion_constraints.min_vel)/2)
+    q_range = jnp.full((7,), (sim_params.motion_constraints.max_vel - sim_params.motion_constraints.min_vel)/2)
+    q = q_nom + jax.random.uniform(keys[0], (B, 7), minval=-q_range, maxval=q_range)
+    dq = jnp.zeros((B, 7))  # could sample small random velocities if desired
 
-    dq = jnp.zeros((B, 7))
-
+    # ----------------------------
     # Block pose
+    # ----------------------------
     xyz = jax.random.uniform(
         keys[1], (B, 3),
-        minval=sim_params.block_bounds.min,
-        maxval=sim_params.block_bounds.max,
+        minval=jnp.array([sim_params.bounds.min_x, sim_params.bounds.min_y, sim_params.bounds.min_z]),
+        maxval=jnp.array([sim_params.bounds.max_x, sim_params.bounds.max_y, sim_params.bounds.max_z]),
     )
-    rpy = jnp.zeros((B, 3))
 
+    # Correct: use quaternion (w, x, y, z) for orientation
+    block_quat = jnp.tile(jnp.array([1.0, 0.0, 0.0, 0.0]), (B, 1))
+
+    # ----------------------------
+    # Block velocities
+    # ----------------------------
     dxyz = jnp.zeros((B, 3))
-    drpy = jnp.zeros((B, 3))
+    omega = jnp.zeros((B, 3))  # angular velocity
 
-    return jnp.concatenate([q, dq, xyz, rpy, dxyz, drpy], axis=-1)
+    # ----------------------------
+    # Concatenate into 27D state
+    # ----------------------------
+    return jnp.concatenate([q, dq, xyz, block_quat, dxyz, omega], axis=-1)
 
+
+# -----------------------------
+# Sample actions (torques)
+# -----------------------------
 @partial(jax.jit, static_argnums=(0,))
-def sample_actions_FRANKA(sim_params, key):
+def sample_actions_FRB(sim_params, key):
     B = sim_params.batch_size
     tau = jax.random.uniform(
         key, (B, 7),
-        minval=-sim_params.max_tau,
-        maxval=sim_params.max_tau,
+        minval=sim_params.motion_constraints.min_torque,
+        maxval=sim_params.motion_constraints.max_torque
     )
     return tau
 
+# -----------------------------
+# Distance function
+# -----------------------------
 @partial(jax.jit, static_argnums=(0,))
-def dist_FRANKA(sim_params, diff):
-    # diff: (..., 26)
-
+def dist_FRB(sim_params, diff):
+    # diff: (..., 27)
     dq = diff[..., 0:7]
-    dblock_xyz = diff[..., 14:17]
-    dblock_rpy = diff[..., 17:20]
+    dxyz = diff[..., 14:17]
+    drpy = diff[..., 17:20]
 
     q_cost = jnp.sum(dq**2, axis=-1)
-    xyz_cost = jnp.sum(dblock_xyz**2, axis=-1)
-    rpy_cost = jnp.sum(dblock_rpy**2, axis=-1)
+    xyz_cost = jnp.sum(dxyz**2, axis=-1)
+    rpy_cost = jnp.sum(drpy**2, axis=-1)
 
-    return (
-        sim_params.w_q * q_cost +
-        sim_params.w_xyz * xyz_cost +
-        sim_params.w_rpy * rpy_cost
-    )
+    w_q, w_xyz, w_rpy = 1.0, 1.0, 0.1
+    return w_q*q_cost + w_xyz*xyz_cost + w_rpy*rpy_cost
 
+# -----------------------------
+# Goal check
+# -----------------------------
 @jax.jit
-def reached_goal_FRANKA(states, goal, radius):
+def reached_goal_FRB(states, goal, radius):
     block_xyz = states[:, 14:17]
-    diff2 = jnp.sum((block_xyz - goal.xyz) ** 2, axis=-1)
+    diff2 = jnp.sum((block_xyz - jnp.asarray([goal.x, goal.y, goal.z]))**2, axis=-1)
     return diff2 < radius**2
 
+# -----------------------------
+# Validity check
+# -----------------------------
 @partial(jax.jit, static_argnums=(1,))
-def valid_FRANKA(state, params, obstacles):
-    q = state[:, :7]
-    block_xyz = state[:, 14:17]
+def valid_FRB(states, params, obstacles):
+    q = states[:, :7]
+    block_xyz = states[:, 14:17]
 
-    joint_ok = jnp.all(
-        (q >= params.q_min) & (q <= params.q_max),
-        axis=-1
-    )
+    joint_ok = jnp.all((q >= params.motion_constraints.min_vel) & (q <= params.motion_constraints.max_vel), axis=-1)
+    table_ok = block_xyz[:, 2] >= 0.0
 
-    table_ok = block_xyz[:, 2] >= params.table_height
+    return joint_ok & table_ok
 
-    # optional: capsule self-collision
-    #self_ok = helper.franka_self_collision_approx(q)
 
-    return joint_ok & table_ok #& self_ok
