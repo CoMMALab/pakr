@@ -13,12 +13,177 @@ import time
 import gc
 import numpy as np
 
+import jax
+from jax import random
+import matplotlib.pyplot as plt
+
+import numpy as np
+from sklearn.mixture import GaussianMixture
+import jax.numpy as jnp
+from typing import NamedTuple
+
+# -------------------------
+# 1. Define JAX-compatible GMM
+# -------------------------
+class GMMParams(NamedTuple):
+    weights: jnp.ndarray  # (K,)
+    means: jnp.ndarray    # (K, D)
+    covs: jnp.ndarray     # (K, D) diagonal
+
+
+def initialize_gmm(init_state, obstacles, sst_params, sim_params, callables, K=10, seed_rollouts=True, N_seed=5000):
+    """
+    Initialize a GMM for AO-RRT.
+    
+    If seed_rollouts=True, performs random rollouts from the start state.
+    If False, returns an 'empty' GMM with zeros and uniform weights.
+    """
+    D = sim_params.dims
+
+    if seed_rollouts:
+        print("Seeding initial GMM from random rollouts...")
+        key_seed = jax.random.PRNGKey(0)
+
+        # replicate start state
+        init_states = jnp.tile(init_state, (N_seed, 1))  # (N_seed, D)
+
+        # random actions
+        seed_actions = jax.random.uniform(
+            key_seed, (N_seed, sim_params.action_dims),
+            minval=-sim_params.action_max,
+            maxval=sim_params.action_max
+        )
+
+        # rollout dynamics
+        states_end, valid_mask, _ = propagate.rollout_final(
+            init_states, seed_actions, obstacles, sst_params, sim_params, callables
+        )
+
+        # collect valid endpoints
+        X_seed = np.array(states_end[valid_mask])
+
+        # fit GMM
+        gmm_params = fit_gmm_from_data(X_seed, K=K)
+
+    else:
+        print("Initializing empty GMM (no seed rollouts)...")
+        gmm_params = GMMParams(
+            weights=jnp.ones(K) / K,                # uniform weights
+            means=jnp.zeros((K, D), dtype=jnp.float32),  # zero means
+            covs=jnp.ones((K, D), dtype=jnp.float32)     # large variance, e.g. 1
+        )
+
+    return gmm_params
+
+def extract_gmm_training_data(tree, states, goal_mask, start_idx, top_fraction=0.2, min_samples=100):
+    """
+    Extract states from the tree to refit the GMM.
+
+    Parameters
+    ----------
+    tree : rrtree.KinoTree
+        The current tree.
+    states : jnp.ndarray
+        Latest batch of states from the iteration.
+    goal_mask : jnp.ndarray
+        Boolean mask indicating which states reached the goal.
+    start_idx : int
+        Start index for the latest batch in the tree.
+    top_fraction : float
+        Fraction of best-cost nodes to include.
+    min_samples : int
+        Minimum number of samples to include (fallback to entire tree if too few).
+
+    Returns
+    -------
+    X_update : np.ndarray
+        Array of states to fit the GMM.
+    sample_weights : np.ndarray
+        Corresponding weights (higher for lower-cost nodes).
+    """
+
+    tree_size = int(tree.tree_size)
+    all_states = np.array(tree.states[:tree_size])
+    all_costs = np.array(tree.costs[:tree_size])
+
+    # 1. Include solution path states
+    solution_states = states[goal_mask]  # shape (num_goal, D)
+
+    # 2. Include a fraction of lowest-cost nodes
+    num_top = max(int(tree_size * top_fraction), min_samples)
+    top_indices = np.argsort(all_costs)[:num_top]
+    top_states = all_states[top_indices]
+    top_costs = all_costs[top_indices]
+
+    # 3. Combine solution states and top nodes
+    X_update = np.vstack([solution_states, top_states])
+
+    # 4. Sample weights: inverse cost (add small eps to avoid division by zero)
+    top_weights = 1.0 / (1e-6 + np.concatenate([np.zeros(solution_states.shape[0]), top_costs]))
+    # give solution states extra weight by setting their cost=0
+    sample_weights = top_weights / np.sum(top_weights)  # normalize to sum to 1
+
+    return X_update, sample_weights
+
+
+# -------------------------
+# 2. Fit GMM from data
+# -------------------------
+def fit_gmm_from_data(X: np.ndarray, K: int = 10, sample_weights: np.ndarray = None):
+    """
+    X: (N, D) array of points to fit
+    K: number of components
+    sample_weights: optional sample weights
+    """
+    gmm = GaussianMixture(
+        n_components=K,
+        covariance_type="diag",
+        reg_covar=1e-4,
+        max_iter=200,
+    )
+    if sample_weights is not None:
+        gmm.fit(X, sample_weight=sample_weights)
+    else:
+        gmm.fit(X)
+
+    gmm_params = GMMParams(
+        weights=jnp.asarray(gmm.weights_, dtype=jnp.float32),
+        means=jnp.asarray(gmm.means_, dtype=jnp.float32),
+        covs=jnp.asarray(gmm.covariances_, dtype=jnp.float32),  # (K, D)
+    )
+
+    return gmm_params
+
+
+def sample_gmm(key, gmm: GMMParams):
+    key_cat, key_gauss = random.split(key)
+
+    # 1. pick a component
+    k = random.categorical(key_cat, jnp.log(gmm.weights))
+
+    # 2. sample from diagonal Gaussian
+    eps = random.normal(key_gauss, shape=(gmm.means.shape[1],))
+    sample = gmm.means[k] + eps * jnp.sqrt(gmm.covs[k])
+
+    return sample
+
+def biased_sample_fn(sim_params, key, callables, gmm: GMMParams, p_gmm: float = 0.5):
+    key_sel, key_gmm, key_uni = random.split(key, 3)
+
+    use_gmm = random.uniform(key_sel) < p_gmm
+
+    x_gmm = sample_gmm(key_gmm, gmm)
+    x_uni = callables.sample_fn(sim_params, key_uni)  # your existing uniform sampling
+
+    return jnp.where(use_gmm, x_gmm, x_uni)
+
+
 @partial(jax.jit, static_argnums=(3, 4, 5))
-def aorrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables, best_cost):
+def aorrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables, best_cost, gmm, p_gmm):
     rng_key, subkey1, subkey2 = jax.random.split(rng_key, 3)
 
     # 1. Sample + NN
-    seed_pts = callables.sample_fn(sim_params, subkey1)
+    seed_pts = biased_sample_fn(sim_params, subkey1, callables, gmm, p_gmm)
     parents, _ = helper.nearest_neighbor_masked(
         sim_params, callables.dist_fn, tree.states, tree.tree_size, seed_pts
     )
@@ -93,7 +258,7 @@ def aorrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables,
 
 
 @partial(jax.jit, static_argnums=(1,2,3))
-def jit_while(tree, sst_params, sim_params, callables, obstacles, best_cost, i):
+def jit_while(tree, sst_params, sim_params, callables, obstacles, best_cost, i, gmm_params, p_gmm):
 
     def body_fn(carry):
         tree, key, goal_mask, goal, states, start_idx, iter = carry
@@ -107,7 +272,9 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, best_cost, i):
             sst_params,
             sim_params,
             callables,
-            best_cost
+            best_cost,
+            gmm_params,    # NEW argument
+            p_gmm  
         )
 
 
@@ -164,14 +331,15 @@ if __name__ == "__main__":
 
 
     obstacles = helper.get_obs(args.env)
-    
+
     # ------------------------------------------------------------
     # AO-RRT driver (single instance, 10s anytime run)
     # ------------------------------------------------------------
-    import matplotlib.pyplot as plt
 
     MAX_TIME = 10.0  # seconds
     MAX_TREE_SIZE = 70000
+    K = 10  # number of GMM components
+    D = sim_params.dims
 
     # ------------------------------------------------------------
     # Tree initialization
@@ -198,11 +366,22 @@ if __name__ == "__main__":
     tree, _ = rrtree.add_nodes(tree, init_state, init_action, -1, 0.0, 1)
 
     # ------------------------------------------------------------
-    # AO bookkeeping
+    # GMM initialization (seed with random rollouts)
     # ------------------------------------------------------------
-    best_cost = jnp.inf
-    times = []
-    costs = []
+    print("Seeding initial GMM from random rollouts...")
+    gmm_params = initialize_gmm(
+        init_state,
+        obstacles,
+        sst_params,
+        sim_params,
+        callables,
+        K=K,
+        seed_rollouts=False,
+        N_seed=5000
+    )
+
+    # Start with p_gmm = 0
+    p_gmm = 0.0
 
     # ------------------------------------------------------------
     # 🔥 JIT warm-up (compile once)
@@ -215,13 +394,14 @@ if __name__ == "__main__":
         sim_params,
         callables,
         obstacles,
-        best_cost,
-        0,
+        best_cost=jnp.inf,
+        i=0,
+        gmm_params=gmm_params,
+        p_gmm=p_gmm
     )
 
-    # Force completion before timing
+    # Force compilation to finish
     jax.block_until_ready(_)
-
     print("Warm-up complete.")
 
     # ------------------------------------------------------------
@@ -231,12 +411,16 @@ if __name__ == "__main__":
 
     t0 = time.perf_counter()
     ao_iter = 0
+    times = []
+    costs = []
+    best_cost = jnp.inf
 
     while True:
         elapsed = time.perf_counter() - t0
         if elapsed >= MAX_TIME:
             break
 
+        rnd = np.random.randint(0, 2**31 - 1)
         tree, key, goal_mask, goal, states, start_idx, iters, size = jit_while(
             tree,
             sst_params,
@@ -244,7 +428,9 @@ if __name__ == "__main__":
             callables,
             obstacles,
             best_cost,
-            ao_iter,
+            rnd,
+            gmm_params,
+            p_gmm
         )
 
         # If at least one goal reached, update incumbent
@@ -262,10 +448,31 @@ if __name__ == "__main__":
                     f"[AO iter {ao_iter:03d}] "
                     f"time={elapsed:6.2f}s | "
                     f"cost={sol_cost:8.3f} | "
-                    f"tree size={int(size)}"
+                    f"tree size={int(size)} | "
+                    f"iters={int(iters)}"
                 )
 
+        # ------------------------------------------------------------
+        # Update GMM after each iteration
+        # ------------------------------------------------------------
+        # Extract states to fit GMM: use all valid expanded nodes in tree
+        # For simplicity, use tree.states[:tree.tree_size]
+        X_update, sample_weights = extract_gmm_training_data(tree, states, goal_mask, start_idx)
+
+        gmm_params = fit_gmm_from_data(X_update, K=10)
+
+        p_gmm = 0.5
+
         ao_iter += 1
+
+    # ------------------------------------------------------------
+    # Print final GMM metrics
+    # ------------------------------------------------------------
+    print("\nFinal GMM metrics:")
+    print("Weights:", gmm_params.weights)
+    print("Means (first 3 components):", gmm_params.means[:3])
+    print("Covariances (first 3 components):", gmm_params.covs[:3])
+
 
     print("\nAO-RRT finished.")
     lower_bound_cost = jnp.linalg.norm(

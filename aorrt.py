@@ -237,6 +237,7 @@ if __name__ == "__main__":
         if elapsed >= MAX_TIME:
             break
 
+        rnd = np.random.randint(0, 2**31 - 1)
         tree, key, goal_mask, goal, states, start_idx, iters, size = jit_while(
             tree,
             sst_params,
@@ -244,7 +245,7 @@ if __name__ == "__main__":
             callables,
             obstacles,
             best_cost,
-            ao_iter,
+            rnd,
         )
 
         # If at least one goal reached, update incumbent
@@ -262,7 +263,8 @@ if __name__ == "__main__":
                     f"[AO iter {ao_iter:03d}] "
                     f"time={elapsed:6.2f}s | "
                     f"cost={sol_cost:8.3f} | "
-                    f"tree size={int(size)}"
+                    f"tree size={int(size)} | "
+                    f"iters={int(iters)}"
                 )
 
         ao_iter += 1
