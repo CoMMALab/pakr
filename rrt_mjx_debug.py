@@ -36,6 +36,7 @@ def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
         sim_params, callables.dist_fn, tree.states, tree.tree_size, seed_pts
     )
     start_states = tree.states[parents]
+    print(start_states)
 
     # ------------------------------------------------------------------
     # 2. Sample actions and rollout
@@ -45,6 +46,7 @@ def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
     states_end, valid_mask, dist_traveled = callables.prop_fn(
         start_states, actions, obstacles, sst_params, sim_params
     )
+    print(states_end)
 
     # ------------------------------------------------------------------
     # 3. Padding for static shapes
@@ -59,7 +61,6 @@ def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
     # 4. Filter valid insertions (index-based masking)
     # ------------------------------------------------------------------
     num_new = jnp.sum(valid_mask)
-    print("hi", num_new)
 
     valid_idx = jnp.nonzero(
         valid_mask,
@@ -84,7 +85,6 @@ def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
         new_costs,
         num_new
     )
-    print("bye")
 
     # ------------------------------------------------------------------
     # 6. Goal check
@@ -92,7 +92,6 @@ def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
     goal_mask = helper.reached_goal_FRB(
         new_states, sst_params.goal, sst_params.goal_radius
     )
-    print("a")
 
     return tree, rng_key, goal_mask, jnp.sum(goal_mask), new_states, start_idx
 
@@ -108,7 +107,6 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, i):
         tree, subkey, goal_mask, goal, states, start_idx = rrt_iteration(
             tree, subkey, obstacles, sst_params, sim_params, callables
         )
-        print("b")
 
         return (tree, key, goal_mask, goal, states, start_idx, iter + 1)
 
@@ -222,128 +220,94 @@ if __name__ == "__main__":
     xx.block_until_ready()
     print("JIT compilation done!")
 
-    # ---------------------------
-    # 6. Run RRT once
-    # ---------------------------
-    print("\nRunning RRT...")
-    start_time = time.perf_counter()
+    # print("\nRunning ONE rrt_iteration (no JIT, no while)...")
 
-    tree, key, goal_mask, goal, states, start_idx, iterations, size = jit_while(
-        tree, sst_params, sim_params, callables, obstacles, 0
-    )
+    # key = jax.random.PRNGKey(0)
+
+    # tree2, key2, goal_mask2, goal2, states2, start_idx2 = rrt_iteration(
+    #     tree,
+    #     key,
+    #     obstacles,
+    #     sst_params,
+    #     sim_params,
+    #     callables,
+    # )
+
+    # # Force execution
+    # jax.tree_util.tree_map(
+    #     lambda x: x.block_until_ready() if hasattr(x, "block_until_ready") else x,
+    #     (tree2, key2, goal_mask2, goal2, states2, start_idx2),
+    # )
+
+    # print("rrt_iteration finished")
+    # print("num new states:", states2.shape[0])
+    # print("goal count:", jnp.sum(goal_mask2))
+    # print("tree size after:", tree2.tree_size)
+
+    print("\nRunning RRT (Python loop, 100 iters)...")
+
+    key = jax.random.PRNGKey(0)
+
+    best_dist = jnp.inf
+    best_iter = -1
+
+    start_time = time.perf_counter()
+    print(sst_params.start.x, sst_params.start.y, sst_params.start.z)
+
+    for i in range(2):
+        key, subkey = jax.random.split(key)
+
+        tree, key, goal_mask, goal_count, states, start_idx = rrt_iteration(
+            tree,
+            subkey,
+            obstacles,
+            sst_params,
+            sim_params,
+            callables,
+        )
+
+        # Force execution (important for timing + debugging)
+        goal_mask = goal_mask.block_until_ready()
+        states = states.block_until_ready()
+        print(states)
+        # --------------------------------------------------
+        # Distance-to-goal tracking
+        # --------------------------------------------------
+        # assumes goal is on block xyz
+        tree_states = tree.states[tree.tree_size - 1:, :]
+        print(tree_states)
+        block_xyz = tree_states[:, 14:17]  # adjust if your indexing differs
+        goal_xyz = jnp.array([
+            sst_params.goal.x,
+            sst_params.goal.y,
+            sst_params.goal.z,
+        ])
+
+        dists = jnp.linalg.norm(block_xyz - goal_xyz, axis=1)
+        iter_best = jnp.min(dists)
+
+        if iter_best < best_dist:
+            best_iter = i
+
+        best_dist = iter_best
+        print(
+            f"[iter {i:03d}] "
+            f"tree_size={int(tree.tree_size)} | "
+            f"new_goal={int(jnp.sum(goal_mask))} | "
+            f"best_dist={float(best_dist):.4f}"
+        )
+
+        # --------------------------------------------------
+        # Early exit if goal reached
+        # --------------------------------------------------
+        if jnp.any(goal_mask):
+            print(f"\n🎯 Goal reached at iteration {i}")
+            break
 
     elapsed = time.perf_counter() - start_time
-    print(f"RRT finished in {elapsed*1e3:.3f} ms")
-    print(f"Iterations: {iterations}, tree size: {size}, goal reached: {jnp.sum(goal_mask)}")
 
-    # ---------------------------
-    # 7. Reconstruct solution path
-    # ---------------------------
-    if jnp.sum(goal_mask) > 0:
-        controls, states_path = helper.find_solution_path_rrt(tree, states, goal_mask, start_idx)
-        init_state = jnp.concatenate([
-            jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]),
-            jnp.zeros(sim_params.dims - 3, dtype=jnp.float32)
-        ])
-        waypoints, states_full = helper.recreate_trajectory(init_state, controls, sim_params, callables.prop_fn)
-
-        print(f"Solution found with {waypoints.shape[0]} waypoints")
-        jnp.save("cache/waypoints.npy", waypoints)
-        jnp.save("cache/states.npy", states_full)
-    else:
-        print("No solution found!")
-
-
-
-    ##############################################
-    # # dummy_tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims, frontier_size=sim_params.batch_size*2)
-    # # dummy_tree = jax.device_put(dummy_tree)
-    # # #jax.config.update("jax_log_compiles", True)
-    # # init_carry = (dummy_tree, jax.random.PRNGKey(0), jnp.zeros(sim_params.batch_size, dtype=bool), 0, jnp.zeros([sim_params.batch_size, sim_params.dims], dtype=jnp.float32), 0, 0)
-
-    # # tree, key, goal_mask, goal, states, start_idx, iter = jax.lax.while_loop(dummy_cond_fn, body_fn, init_carry)
-    # # dummy_tree = None
-    # # gc.collect()
-
-    # tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
-    # tree = jax.device_put(tree)
-    # init = jnp.concatenate([jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]), jnp.zeros(sim_params.dims - 3, dtype=jnp.float32)], axis=0)
-    # controls = jnp.zeros(sim_params.action_dims)
-    # tree, _ = rrtree.add_nodes(tree, init, controls, -1, 0.0, 1)
-
-    # # key = jax.random.PRNGKey(0)
-    # # start = time.time()
-    # # tree, key = rrt(tree, key, obstacles, sst_params, sim_params, callables, num_iters=100)
-    # # print('Total RRT time for 5 iterations:', time.time() - start)
-
-    # goal = 0
-    # i = 0
-    # print("\n\n start rrt \n\n")
-    # start_p = time.perf_counter()
-
-    # jit_while(tree, sst_params, sim_params, callables, obstacles, 0)
-
-
-    # # testing
-    # times = []
-    # iters = []
-    # sizes = []
-    # costs = []
-    # for i in range(100):
-    #     gc.collect
-
-    #     tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
-    #     tree = jax.device_put(tree)
-    #     init = jnp.concatenate([jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]), jnp.zeros(sim_params.dims - 3, dtype=jnp.float32)], axis=0)
-    #     controls = jnp.zeros(sim_params.action_dims)
-    #     tree, _ = rrtree.add_nodes(tree, init, controls, -1, 0.0, 1)
-    #     # key = jax.random.PRNGKey(0)
-    #     # start = time.time()
-    #     # tree, key = rrt(tree, key, obstacles, sst_params, sim_params, callables, num_iters=100)
-    #     # print('Total RRT time for 5 iterations:', time.time() - start)
-
-    #     goal = 0
-    #     #print("\n\n start rrt \n\n")
-    #     start_p = time.perf_counter()
-
-    #     # Initialize
-    #     tree, key, goal_mask, goal, states, start_idx, iter, size = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
-    #     timer = time.perf_counter() - start_p
-    #     cost = tree.costs[jnp.argmax(goal_mask) + start_idx]
-    #     costs.append(cost)
-    #     times.append(timer)
-    #     iters.append(iter)
-    #     sizes.append(size)
-    #     print(f"Found goal after {iter} iterations, time: {(timer)*1e3:.3f} ms, tree size: {size}")
-
-    # times = jnp.array(times)
-    # iters = jnp.array(iters)
-    # sizes = jnp.array(sizes)
-    # costs = jnp.array(costs)
-    # print(goal.dtype)
-    # print(f"Average time over 100 runs: {jnp.mean(times)*1e3:.3f} ms, {jnp.mean(iters):.2f} iterations, size {jnp.mean(sizes):.2f}")
-    # print(f"min time over 100 runs: {jnp.min(times)*1e3:.3f} ms, {jnp.min(iters)} iterations, min size {jnp.min(sizes)}")
-    # print(f"max time over 100 runs: {jnp.max(times)*1e3:.3f} ms, {jnp.max(iters)} iterations, max size {jnp.max(sizes)}")
-    # print(f"Average cost over 100 runs: {jnp.mean(costs):.3f}, min cost: {jnp.min(costs):.3f}, max cost: {jnp.max(costs):.3f}")
-    # # while goal == 0:
-    # #     i += 1
-    # #     key = jax.random.PRNGKey(i+20)
-    # #     #start = time.time()
-    # #     tree, key, goal_mask, goal, states, start_idx = rrt_iteration(tree, key, obstacles, sst_params, sim_params, callables)
-    #     # if start_idx < 512:
-    #     #     print(tree.parents[:100])
-    #     #     print(tree.frontier[:100])
-    #     #print('Total time:', time.time() - start, i, tree.tree_size, tree.num_frontiers)
-
-    #     # for j in range(tree.tree_size):
-    #     #     print(tree.states[j], tree.costs[j], tree.parents[j], tree.active[j])
-    
-    # idx = jnp.argmax(goal_mask)
-    # #print(start_idx+idx)
-    # controls, states = helper.find_solution_path_rrt(tree, states, goal_mask, start_idx)
-    # init = jnp.concatenate([jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]), jnp.zeros(sim_params.dims - 3, dtype=jnp.float32)], axis=0)
-    # print(controls)
-    # print(states)
-    # waypoints, states = helper.recreate_trajectory(init, controls, sim_params, callables.prop_fn)
-    # #print(waypoints)
-    # jnp.save('cache/waypoints.npy', waypoints)
+    print("\n===== RRT SUMMARY =====")
+    print(f"Elapsed time: {elapsed:.3f} s")
+    print(f"Best distance to goal: {float(best_dist):.4f}")
+    print(f"Achieved at iteration: {best_iter}")
+    print(f"Final tree size: {int(tree.tree_size)}")
