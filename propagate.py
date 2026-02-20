@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import mujoco.mjx as mjx
 from functools import partial
-
+import helper
 
 def propagate_double_integrator(states, actions, dt, constants):
     """
@@ -309,14 +309,13 @@ def make_frb_rollout(prop_fn):
             cost:        (batch,)  -> zeros
         """
         batch = state0.shape[0]
-
         final_states = prop_fn(
             sst_params.time_to_evolve,
             state0,
             actions,
         )
 
-        valid_mask = jnp.ones((batch,), dtype=jnp.bool_)
+        valid_mask = helper.check_valid_eeb(final_states, sim_params)
         cost = jnp.zeros((batch,), dtype=jnp.float32)
 
         return final_states, valid_mask, cost

@@ -178,7 +178,7 @@ goal_qc = Position(
 #batch_size = 32768
 #batch_size = 131072
 #batch_size = 65536
-batch_size = 4096
+batch_size = 1024
 seed = 0
 time_to_evolve = 10
 # Safe params
@@ -311,10 +311,17 @@ frb_motion_constraints = MotionConstraints(
     min_angle_vel=0.0
 )
 
+eeb_motion_constraints = MotionConstraints(
+    min_vel = -1.0,
+    max_vel = 1.0,
+    min_torque = -8.0,
+    max_torque = 8.0
+)
+
 # Workspace bounds for the block
 frb_bounds = Bounds(
-    min_x=-0.2, max_x=0.2,
-    min_y=-0.2, max_y=0.2,
+    min_x=-0.3, max_x=.8,
+    min_y=-0.3, max_y=.8,
     min_z=0.0, max_z=0.3
 )
 
@@ -349,7 +356,33 @@ sst_params_FRB = SSTparams(
     do_cost_to_go=False,
     do_maximal=True,
     do_set_cover=True,
-    time_to_evolve=10,
+    time_to_evolve=5,
     sparsity=0,
 )
 
+sim_params_EEB = MJXparams(
+    motion_constraints=eeb_motion_constraints,  # torques bounded later
+    physics_constants=PhysicsConstants(),
+    batch_size=batch_size,
+    bounds=frb_bounds,        # unused for now
+    dims=10,
+    action_dims=2,
+    dt=0.02,                # MJX timestep
+    seed=seed,
+)
+
+sst_params_EEB = SSTparams(
+    batch_size=batch_size,
+    δBN=0.2,
+    δs=0.15,
+    decay=0.8,
+    start=Position(x=0.0, y=0.0, z=0.0), # z is theta
+    goal=Position(x=0.3, y=0.0, z=0.0),
+    goal_radius=0.05,
+    geo_cost_to_go_weight=0.0,
+    do_cost_to_go=False,
+    do_maximal=True,
+    do_set_cover=True,
+    time_to_evolve=10,
+    sparsity=0,
+)

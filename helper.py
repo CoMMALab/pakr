@@ -574,4 +574,71 @@ def valid_FRB(states, params, obstacles):
 
     return joint_ok & table_ok
 
+@jax.jit
+def reached_goal_EEB(states, goal, radius):
+    block_xyz = states[:, 4:7]
+    diff2 = jnp.sum((block_xyz - jnp.asarray([goal.x, goal.y, goal.z]))**2, axis=-1)
+    return diff2 < radius**2
 
+@partial(jax.jit, static_argnums=(0,))
+def dist_EEB(sim_params, diff):
+    # diff: (..., 27)
+    dq = diff[..., 0:2]
+    dxyz = diff[..., 4:7]
+    drpy = diff[..., 2:4]
+
+    q_cost = jnp.sum(dq**2, axis=-1)
+    xyz_cost = jnp.sum(dxyz**2, axis=-1)
+    rpy_cost = jnp.sum(drpy**2, axis=-1)
+
+    w_q, w_xyz, w_rpy = 1.0, 1.0, 0.1
+    return w_q*q_cost + w_xyz*xyz_cost + w_rpy*rpy_cost
+
+@partial(jax.jit, static_argnums=(0,))
+def sample_actions_EEB(sim_params, key):
+    B = sim_params.batch_size
+    tau = jax.random.uniform(
+        key, (B, 2),
+        minval=sim_params.motion_constraints.min_torque,
+        maxval=sim_params.motion_constraints.max_torque
+    )
+    return tau
+
+@partial(jax.jit, static_argnums=(0,))
+def sample_EEB(sim_params, key):
+    B = sim_params.batch_size
+    keys = jax.random.split(key, 4)
+    q = jax.random.uniform(keys[0], (B, 2), minval=sim_params.bounds.min_x, maxval=sim_params.bounds.max_x)  # 2D arm configuration
+    dq = jax.random.uniform(keys[1], (B, 2), minval=sim_params.motion_constraints.min_vel, maxval=sim_params.motion_constraints.max_vel)
+
+    # ----------------------------
+    # Block pose
+    # ----------------------------
+    xy = jax.random.uniform(
+        keys[1], (B, 2),
+        minval=jnp.array([sim_params.bounds.min_x, sim_params.bounds.min_y]),
+        maxval=jnp.array([sim_params.bounds.max_x, sim_params.bounds.max_y]),
+    )
+
+    theta = jax.random.uniform(keys[2], (B, 1), minval=-jnp.pi/2, maxval=jnp.pi/2)
+
+    # ----------------------------
+    # Block velocities
+    # ----------------------------
+    dxyz = jnp.zeros((B, 3))
+
+    # ----------------------------
+    # Concatenate into 10D state
+    # ----------------------------
+    return jnp.concatenate([q, dq, xy, theta, dxyz], axis=-1)
+
+def check_valid_eeb(states, params):
+    q = states[:, :2]
+    block_xy = states[:, 4:6]
+    dq = states[:, 2:4]
+
+    joint_ok = jnp.all((q >= params.motion_constraints.min_vel) & (q <= params.motion_constraints.max_vel), axis=-1)
+    table_ok = (block_xy[:, 0] >= params.bounds.min_x) & (block_xy[:, 0] <= params.bounds.max_x) & \
+               (block_xy[:, 1] >= params.bounds.min_y) & (block_xy[:, 1] <= params.bounds.max_y)
+    vel_ok = jnp.all((dq >= params.motion_constraints.min_vel) & (dq <= params.motion_constraints.max_vel), axis=-1)
+    return joint_ok & table_ok & vel_ok

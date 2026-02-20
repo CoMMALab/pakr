@@ -120,6 +120,35 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, i):
     tree, key, goal_mask, goal, states, start_idx, iter = jax.lax.while_loop(cond_fn, body_fn, init_carry)
     return tree, key, goal_mask, goal, states, start_idx, iter, tree.tree_size
 
+def extract_sol(tree, goal_mask, start_idx):
+    if jnp.sum(goal_mask) == 0:
+        print("error: no goal reached")
+        return None, None
+    
+    print(jnp.sum(goal_mask))
+
+    goal_idxs = jnp.argmax(goal_mask)
+    goal_idx = goal_idxs + start_idx
+    path = []
+    actions = []
+    while goal_idx != -1:
+        path.append(tree.states[goal_idx])
+        actions.append(tree.actions[goal_idx])
+        goal_idx = tree.parents[goal_idx]
+    return jnp.array(path[::-1]), jnp.array(actions[::-1])
+
+def verify_sol(path, actions, obstacles, sst_params, sim_params, callables):
+    for i in range(len(actions)):
+        start = path[i][None, :]    # shape: (1, state_dim)
+        action = actions[i][None, :]
+        states_end, valid_mask, _ = propagate.rollout_final(
+            start, action, obstacles, sst_params, sim_params, callables
+        )
+        if not valid_mask[0]:
+            return False
+    return True
+
+
 MAX_TREE_SIZE = 70000
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
@@ -190,7 +219,7 @@ if __name__ == "__main__":
     iters = []
     sizes = []
     costs = []
-    for i in range(100):
+    for i in range(10):
         gc.collect
 
         tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
@@ -210,6 +239,13 @@ if __name__ == "__main__":
         # Initialize
         tree, key, goal_mask, goal, states, start_idx, iter, size = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
         timer = time.perf_counter() - start_p
+
+
+        path, actions = extract_sol(tree, goal_mask, start_idx)
+        print(path)
+        print(actions)
+        is_valid = verify_sol(path, actions, obstacles, sst_params, sim_params, callables)
+        print(is_valid)
         cost = tree.costs[jnp.argmax(goal_mask) + start_idx]
         costs.append(cost)
         times.append(timer)
@@ -226,25 +262,5 @@ if __name__ == "__main__":
     print(f"min time over 100 runs: {jnp.min(times)*1e3:.3f} ms, {jnp.min(iters)} iterations, min size {jnp.min(sizes)}")
     print(f"max time over 100 runs: {jnp.max(times)*1e3:.3f} ms, {jnp.max(iters)} iterations, max size {jnp.max(sizes)}")
     print(f"Average cost over 100 runs: {jnp.mean(costs):.3f}, min cost: {jnp.min(costs):.3f}, max cost: {jnp.max(costs):.3f}")
-    # while goal == 0:
-    #     i += 1
-    #     key = jax.random.PRNGKey(i+20)
-    #     #start = time.time()
-    #     tree, key, goal_mask, goal, states, start_idx = rrt_iteration(tree, key, obstacles, sst_params, sim_params, callables)
-        # if start_idx < 512:
-        #     print(tree.parents[:100])
-        #     print(tree.frontier[:100])
-        #print('Total time:', time.time() - start, i, tree.tree_size, tree.num_frontiers)
 
-        # for j in range(tree.tree_size):
-        #     print(tree.states[j], tree.costs[j], tree.parents[j], tree.active[j])
     
-    idx = jnp.argmax(goal_mask)
-    #print(start_idx+idx)
-    controls, states = helper.find_solution_path_rrt(tree, states, goal_mask, start_idx)
-    init = jnp.concatenate([jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]), jnp.zeros(sim_params.dims - 3, dtype=jnp.float32)], axis=0)
-    print(controls)
-    print(states)
-    waypoints, states = helper.recreate_trajectory(init, controls, sim_params, callables.prop_fn)
-    #print(waypoints)
-    jnp.save('cache/waypoints.npy', waypoints)

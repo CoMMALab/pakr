@@ -194,10 +194,12 @@ if __name__ == "__main__":
 
     init_state = jnp.zeros(sim_params.dims, dtype=jnp.float32)
 
-    # set block xyz at indices 14:17
-    init_state = init_state.at[14:17].set(
-        jnp.array([sst_params.start.x, sst_params.start.y, sst_params.start.z], dtype=jnp.float32)
+    # set block xyz at indices 14:17 and quat to [1, 0, 0, 0]
+    init_state = init_state.at[14:18].set(
+        jnp.array([sst_params.start.x, sst_params.start.y, sst_params.start.z, 1], dtype=jnp.float32)
     )
+
+    print(init_state)
 
     # rest of the state (q, dq, rpy, dxyz, drpy) stays zero
     init_controls = jnp.zeros(sim_params.action_dims, dtype=jnp.float32)

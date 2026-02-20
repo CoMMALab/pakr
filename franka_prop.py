@@ -93,9 +93,103 @@ def make_franka_propagate_fn(mjx_model):
 
     return propagate_batch
 
+from functools import partial
+import jax
+import jax.numpy as jnp
+import mujoco.mjx as mjx
+
+
+def make_ball_block_propagate_fn(mjx_model):
+    """
+    Batched MJX propagation for:
+      - 2D force-controlled ball
+      - 2D block with rotation (nonprehensile)
+    """
+
+    @partial(jax.jit, static_argnums=(0,))
+    def propagate_batch(num_steps, states, actions):
+        """
+        states: (batch, 10)
+          [ ball_x, ball_y,
+            ball_dx, ball_dy,
+            block_x, block_y, block_theta,
+            block_dx, block_dy, block_dtheta ]
+
+        actions: (batch, 2)
+          [ Fx, Fy ]
+        """
+
+        # -------------------------
+        # Split state
+        # -------------------------
+        ball_xy     = states[:, 0:2]
+        ball_dxy    = states[:, 2:4]
+
+        block_xyth  = states[:, 4:7]
+        block_dxyth = states[:, 7:10]
+
+        # -------------------------
+        # Assemble qpos / qvel
+        # MJX model layout:
+        # qpos = [ ball_x, ball_y, block_x, block_y, block_theta ]
+        # qvel = [ ball_dx, ball_dy, block_dx, block_dy, block_dtheta ]
+        # -------------------------
+        qpos = jnp.concatenate(
+            [ball_xy, block_xyth], axis=-1
+        )  # (batch, 5)
+
+        qvel = jnp.concatenate(
+            [ball_dxy, block_dxyth], axis=-1
+        )  # (batch, 5)
+
+        # -------------------------
+        # MJX data creation
+        # -------------------------
+        template = mjx.make_data(mjx_model)
+
+        def _make_data(qp, qv, u):
+            return template.replace(
+                qpos=qp,
+                qvel=qv,
+                ctrl=u,
+            )
+
+        data_batch = jax.vmap(_make_data)(qpos, qvel, actions)
+
+        # -------------------------
+        # MJX stepping (batched)
+        # -------------------------
+        vmapped_step = jax.vmap(mjx.step, in_axes=(None, 0))
+
+        def step_fn(_, data):
+            return vmapped_step(mjx_model, data)
+
+        final_data = jax.lax.fori_loop(
+            0, num_steps, step_fn, data_batch
+        )
+
+        # -------------------------
+        # Extract final state
+        # -------------------------
+        final_states = jnp.concatenate(
+            [
+                final_data.qpos[:, 0:2],   # ball x,y
+                final_data.qvel[:, 0:2],   # ball dx,dy
+                final_data.qpos[:, 2:5],   # block x,y,theta
+                final_data.qvel[:, 2:5],   # block dx,dy,dtheta
+            ],
+            axis=-1,
+        )
+
+        return final_states
+
+    return propagate_batch
+
+
 
 if __name__ == "__main__":
-    XML_PATH = "models/franka_block.xml"  # <-- your MJCF
+    # XML_PATH = "models/franka_block.xml"  # <-- your MJCF
+    XML_PATH = "models/eeonly.xml"  # <-- your MJCF
 
     try:
         model = mujoco.MjModel.from_xml_path(XML_PATH)
@@ -126,6 +220,7 @@ if __name__ == "__main__":
     q_arm = jax.random.uniform(
         keys[0], (BATCH_SIZE, 7), minval=-0.1, maxval=0.1
     )
+    q_arm = jnp.zeros((BATCH_SIZE, 7))
     dq_arm = jnp.zeros((BATCH_SIZE, 7))
 
     # Block
@@ -170,7 +265,8 @@ if __name__ == "__main__":
     print(f"JAX devices: {jax.devices()}")
     print(f"Default backend: {jax.default_backend()}")
 
-    franka_propagate_fn = make_franka_propagate_fn(mjx_model)
+    #franka_propagate_fn = make_franka_propagate_fn(mjx_model)
+    franka_propagate_fn = make_ball_block_propagate_fn(mjx_model)
 
 
     # -------------------------------------------------

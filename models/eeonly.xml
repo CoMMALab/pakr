@@ -1,0 +1,60 @@
+<mujoco model="ball_block_2d">
+
+  <!-- Use implicit integrator for stability -->
+  <option timestep="0.03"
+          gravity="0 0 -9.81"/>
+
+  <size njmax="200" nconmax="100"/>
+
+  <!-- Softer contact + reasonable friction -->
+  <default>
+    <geom friction="0.8 0.01 0.001"
+          solref="0.01 1"
+          solimp="0.9 0.95 0.001"/>
+  </default>
+
+  <worldbody>
+
+    <!-- Ground plane -->
+    <geom type="plane" size="5 5 0.1" rgba="0.9 0.9 0.9 1"/>
+
+    <!-- Ball (lighter + damped) -->
+    <body name="ball" pos="0 0.3 0.05">
+      <joint name="ball_x" type="slide" axis="1 0 0" damping="2"/>
+      <joint name="ball_y" type="slide" axis="0 1 0" damping="2"/>
+
+      <!-- Explicit mass instead of density -->
+      <!-- Ball -->
+      <inertial pos="0 0 0"
+                mass="0.1"
+                diaginertia="0.0005 0.0005 0.0005"/>
+
+
+
+
+      <geom type="sphere" size="0.05" rgba="0.2 0.6 1 1"/>
+    </body>
+
+    <!-- Block (moderate mass + damping) -->
+    <body name="block" pos="0.0 0 0.05">
+      <joint name="block_x" type="slide" axis="1 0 0" damping="1"/>
+      <joint name="block_y" type="slide" axis="0 1 0" damping="1"/>
+      <joint name="block_yaw" type="hinge" axis="0 0 1" damping="0.2"/>
+
+            <!-- Block -->
+      <inertial pos="0 0 0"
+                mass="0.3"
+                diaginertia="0.002 0.002 0.002"/>
+
+      <geom type="box" size="0.05 0.05 0.05" rgba="0.8 0.3 0.3 1"/>
+    </body>
+
+  </worldbody>
+
+  <actuator>
+    <!-- Reduced force range -->
+    <motor joint="ball_x" ctrlrange="-8 8"/>
+    <motor joint="ball_y" ctrlrange="-8 8"/>
+  </actuator>
+
+</mujoco>

@@ -1,63 +1,58 @@
-<?xml version="1.0" ?>
-<mujoco model="franka_block">
+<mujoco model="franka_pusher_mjx">
+    <compiler angle="radian" coordinate="local" autolimits="true"/>
 
-    <compiler angle="radian" coordinate="local"/>
+    <option timestep="0.01" gravity="0 0 -9.81" iterations="20" solver="Newton" jacobian="dense">
+        <flag contact="enable"/>
+    </option>
 
-    <option
-        timestep="0.02"
-        gravity="0 0 -9.81"
-        iterations="1"
-        ls_iterations="4"
-        solver="Newton"
-        jacobian="dense"
-        integrator="Euler"/>
-
-    <!-- Give all geoms mass automatically -->
     <default>
-        <geom density="1000"/>
+        <geom contype="1" conaffinity="1" condim="3" friction="1 0.005 0.0001" density="1000"/>
+        <joint armature="0.1" damping="1" limited="true"/>
+        <general ctrllimited="true" ctrlrange="-150 150"/>
     </default>
 
     <asset>
-        <material name="table_mat" rgba="0.8 0.8 0.8 1"/>
+        <material name="table_mat" rgba="0.3 0.3 0.3 1"/>
         <material name="block_mat" rgba="0.9 0.2 0.2 1"/>
+        <material name="arm_mat" rgba="0.8 0.8 0.8 1"/>
     </asset>
 
     <worldbody>
+        <light pos="0 0 2" dir="0 0 -1"/>
 
-        <!-- Table -->
-        <body name="table" pos="0 0 0">
-            <geom type="box" size="0.5 0.5 0.05" material="table_mat"/>
-        </body>
+        <geom name="floor" type="plane" size="1 1 0.05" pos="0 0 0" material="table_mat"/>
 
-        <!-- Franka-like arm -->
-        <body name="franka_base" pos="0 0 0.05">
+        <body name="link0" pos="0 0 0.025">
+            <geom type="sphere" size="0.05" material="arm_mat"/>
+            
+            <body name="link1" pos="0 0 0.05">
+                <joint name="joint1" axis="0 0 1" range="-2.89 2.89"/>
+                <geom type="capsule" fromto="0 0 0 0 0 0.1" size="0.03"/>
 
-            <joint name="joint1" type="hinge" axis="0 0 1"/>
-            <geom type="capsule" fromto="0 0 0 0 0 0.1" size="0.02"/>
+                <body name="link2" pos="0 0 0.1">
+                    <joint name="joint2" axis="0 1 0" range="-1.76 1.76"/>
+                    <geom type="capsule" fromto="0 0 0 0 0 0.2" size="0.03"/>
+                    
+                    <body name="link3" pos="0 0 0.2">
+                        <joint name="joint3" axis="0 0 1" range="-2.89 2.89"/>
+                        <geom type="capsule" fromto="0 0 0 0 0 0.1" size="0.03"/>
 
-            <body pos="0 0 0.1">
-                <joint name="joint2" type="hinge" axis="0 1 0"/>
-                <geom type="capsule" fromto="0 0 0 0 0 0.2" size="0.02"/>
+                        <body name="link4" pos="0 0 0.1">
+                            <joint name="joint4" axis="0 -1 0" range="-3.07 -0.06"/>
+                            <geom type="capsule" fromto="0 0 0 0 0 0.2" size="0.03"/>
+                            
+                            <body name="link5" pos="0 0 0.2">
+                                <joint name="joint5" axis="0 0 1" range="-2.89 2.89"/>
+                                <geom type="capsule" fromto="0 0 0 0 0 0.1" size="0.03"/>
 
-                <body pos="0 0 0.2">
-                    <joint name="joint3" type="hinge" axis="0 1 0"/>
-                    <geom type="capsule" fromto="0 0 0 0 0 0.2" size="0.02"/>
-
-                    <body pos="0 0 0.2">
-                        <joint name="joint4" type="hinge" axis="1 0 0"/>
-                        <geom type="capsule" fromto="0 0 0 0 0 0.2" size="0.02"/>
-
-                        <body pos="0 0 0.2">
-                            <joint name="joint5" type="hinge" axis="0 1 0"/>
-                            <geom type="capsule" fromto="0 0 0 0 0 0.15" size="0.02"/>
-
-                            <body pos="0 0 0.15">
-                                <joint name="joint6" type="hinge" axis="1 0 0"/>
-                                <geom type="capsule" fromto="0 0 0 0 0 0.1" size="0.02"/>
-
-                                <body pos="0 0 0.1">
-                                    <joint name="joint7" type="hinge" axis="0 1 0"/>
-                                    <geom type="capsule" fromto="0 0 0 0 0 0.1" size="0.02"/>
+                                <body name="link6" pos="0 0 0.1">
+                                    <joint name="joint6" axis="0 1 0" range="-0.01 3.75"/>
+                                    <geom type="capsule" fromto="0 0 0 0 0 0.05" size="0.03"/>
+                                    
+                                    <body name="link7" pos="0 0 0.05">
+                                        <joint name="joint7" axis="0 0 1" range="-2.89 2.89"/>
+                                        <geom type="capsule" fromto="-0.05 0 0 0.05 0 0" size="0.02" material="arm_mat"/>
+                                    </body>
                                 </body>
                             </body>
                         </body>
@@ -66,23 +61,19 @@
             </body>
         </body>
 
-        <!-- Block -->
-        <body name="block" pos="0.5 0 0.05">
-            <geom type="box" size="0.05 0.05 0.05" material="block_mat"/>
+        <body name="block" pos="0.4 0 0.03">
             <freejoint name="block_free"/>
+            <geom type="capsule" size="0.03 0.01" material="block_mat" mass="0.1"/>
         </body>
-
     </worldbody>
 
-    <!-- One actuator per joint -->
     <actuator>
-        <general joint="joint1" ctrlrange="-150 150"/>
-        <general joint="joint2" ctrlrange="-150 150"/>
-        <general joint="joint3" ctrlrange="-150 150"/>
-        <general joint="joint4" ctrlrange="-150 150"/>
-        <general joint="joint5" ctrlrange="-150 150"/>
-        <general joint="joint6" ctrlrange="-150 150"/>
-        <general joint="joint7" ctrlrange="-150 150"/>
+        <motor joint="joint1" name="m1"/>
+        <motor joint="joint2" name="m2"/>
+        <motor joint="joint3" name="m3"/>
+        <motor joint="joint4" name="m4"/>
+        <motor joint="joint5" name="m5"/>
+        <motor joint="joint6" name="m6"/>
+        <motor joint="joint7" name="m7"/>
     </actuator>
-
 </mujoco>

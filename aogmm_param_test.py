@@ -296,6 +296,118 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, best_cost, i, 
     return tree, key, goal_mask, goal, states, start_idx, iter, tree.tree_size
 
 
+####################
+# hyperparmaeter test
+#####################
+
+import itertools
+from dataclasses import dataclass
+import pandas as pd
+
+# -------------------------
+# New Strategy Functions
+# -------------------------
+def get_training_data(strategy, tree, states, goal_mask, start_idx, best_cost, sst_params):
+    tree_size = int(tree.tree_size)
+    all_states = np.array(tree.states[:tree_size])
+    all_costs = np.array(tree.costs[:tree_size])
+    all_parents = np.array(tree.parents[:tree_size])
+    
+    goal = jnp.array([sst_params.goal.x, sst_params.goal.y, sst_params.goal.z])
+
+    if strategy == "entire_tree":
+        return all_states, np.ones(len(all_states))
+
+    # Identify solution path indices
+    sol_indices = []
+    if jnp.any(goal_mask):
+        curr = int(start_idx + jnp.argmax(goal_mask))
+        while curr != -1:
+            sol_indices.append(curr)
+            curr = all_parents[curr]
+    
+    if strategy == "solution_only":
+        return all_states[sol_indices], np.ones(len(sol_indices))
+
+    if strategy == "sol_plus_ancestors":
+        # Nodes whose lineage eventually hits the solution path (simplified: nodes with parents in solution)
+        mask = np.isin(all_parents, sol_indices) | np.isin(np.arange(tree_size), sol_indices)
+        return all_states[mask], np.ones(np.sum(mask))
+
+    if strategy == "sol_ancestor_goodcost":
+        # Ancestors + nodes where g+h is close to optimal
+        h = np.linalg.norm(all_states[:, :3] - goal, axis=-1)
+        f_costs = all_costs + h
+        # Threshold: nodes within 20% of current best cost
+        cost_mask = f_costs <= (best_cost * 1.2)
+        anc_mask = np.isin(all_parents, sol_indices) | np.isin(np.arange(tree_size), sol_indices)
+        final_mask = cost_mask | anc_mask
+        return all_states[final_mask], np.ones(np.sum(final_mask))
+
+# -------------------------
+# Grid Search Harness
+# -------------------------
+def run_grid_search(obstacles, sst_params, sim_params, callables):
+    # Hyperparameter Grid
+    param_grid = {
+        'K': [5, 10, 20],
+        'p_gmm_scale': [0.3, 0.5, 0.8],
+        'strategy': ["entire_tree", "solution_only", "sol_plus_ancestors", "sol_ancestor_goodcost"]
+    }
+    
+    keys = param_grid.keys()
+    combinations = list(itertools.product(*param_grid.values()))
+    results = []
+
+    print(f"Starting Grid Search: {len(combinations)} combinations, 10 trials each.")
+
+    for combo in combinations:
+        params_dict = dict(zip(keys, combo))
+        K, p_gmm_val, strat = params_dict['K'], params_dict['p_gmm_scale'], params_dict['strategy']
+        
+        trial_costs = []
+        
+        for trial in range(10):
+            # Reset Tree
+            tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.dims, sim_params.action_dims)
+            # ... (init code same as your original) ...
+            
+            # Run AO-RRT for a fixed duration (e.g., 5s for search)
+            # Return the best_cost found
+            final_cost = run_ao_rrt_instance(tree, K, p_gmm_val, strat, sst_params, sim_params, callables, obstacles, duration=5.0)
+            trial_costs.append(final_cost)
+            
+        avg_cost = np.mean([c for c in trial_costs if c != np.inf])
+        success_rate = np.mean([1 if c != np.inf else 0 for c in trial_costs])
+        
+        results.append({
+            **params_dict,
+            'avg_cost': avg_cost,
+            'success_rate': success_rate
+        })
+        print(f"Finished: {params_dict} -> Success: {success_rate:.2f}, Avg Cost: {avg_cost:.2f}")
+
+    return pd.DataFrame(results)
+
+# (Helper to wrap your loop logic into a function)
+def run_ao_rrt_instance(tree, K, p_gmm, strategy, sst_params, sim_params, callables, obstacles, duration):
+    # This contains your while loop logic, returning best_cost
+    # ...
+    return best_cost
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 MAX_TREE_SIZE = 70000
 if __name__ == "__main__":
@@ -339,7 +451,7 @@ if __name__ == "__main__":
     # ------------------------------------------------------------
 
     MAX_TIME = 10.0  # seconds
-    MAX_TREE_SIZE = 100000
+    MAX_TREE_SIZE = 70000
     K = 10  # number of GMM components
     D = sim_params.dims
 
@@ -411,230 +523,112 @@ if __name__ == "__main__":
     # ------------------------------------------------------------
     print("\nStarting AO-RRT...\n")
 
-    import numpy as np
-    import matplotlib.pyplot as plt
-    import pandas as pd
-    import seaborn as sns
-    import time
-    import jax
-    import jax.numpy as jnp
-    import gc
+    t0 = time.perf_counter()
+    ao_iter = 0
+    times = []
+    costs = []
+    best_cost = jnp.inf
 
-    # --- Configuration ---
-    N_RUNS = 10
-    MAX_TIME = 10.0       
-    COST_THRESHOLD = 1.55
-    GT_MIN_COST = 1.48    
-    all_run_data = []
+    while True:
+        gc.collect
+        elapsed = time.perf_counter() - t0
+        if elapsed >= MAX_TIME:
+            break
 
-    for run_id in range(N_RUNS):
-        print(f"\n--- Starting Run {run_id+1}/{N_RUNS} ---")
-        
-        # 1. CLEANUP & RESET TREE (Crucial fix)
-        gc.collect() 
-        
-        # Initialize a fresh tree exactly like your reference RRT test
-        tree = rrtree.KinoTree.init(
-            max_size=MAX_TREE_SIZE, 
-            state_dim=sim_params.dims, 
-            action_dim=sim_params.action_dims
+        rnd = np.random.randint(0, 2**31 - 1)
+        tree, key, goal_mask, goal, states, start_idx, iters, size = jit_while(
+            tree,
+            sst_params,
+            sim_params,
+            callables,
+            obstacles,
+            best_cost,
+            rnd,
+            gmm_params,
+            p_gmm
         )
-        tree = jax.device_put(tree)
-        
-        # Define start state and insert root node
-        init_state = jnp.concatenate([
-            jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]), 
-            jnp.zeros(sim_params.dims - 3, dtype=jnp.float32)
-        ], axis=0)
-        controls = jnp.zeros(sim_params.action_dims)
-        
-        # Add the root node to the fresh tree
-        tree, _ = rrtree.add_nodes(tree, init_state, controls, -1, 0.0, 1)
-        
-        # 2. RESET AO-SPECIFIC PARAMETERS
-        ao_iter = 0
-        best_cost = float('inf')
-        # Reset GMM to uniform/initial state (assuming gmm_init exists or reset logic)
-        # gmm_params = init_gmm_params() 
-        
-        t0 = time.perf_counter()
-        
-        # 3. AO-RRT LOOP
-        while True:
-            elapsed = time.perf_counter() - t0
-            
-            # Exit conditions
-            if elapsed >= MAX_TIME:
-                print(f"Run {run_id+1} hit Time Limit.")
-                break
-            if best_cost <= COST_THRESHOLD:
-                print(f"Run {run_id+1} hit Cost Threshold.")
-                break
 
-            rnd = np.random.randint(0, 2**31 - 1)
-            
-            # Call the Adaptive JIT function
-            tree, key, goal_mask, goal, states, start_idx, iters, size = jit_while(
-                tree, sst_params, sim_params, callables, obstacles,
-                best_cost, rnd, gmm_params, p_gmm
-            )
+        # If at least one goal reached, update incumbent
+        if goal > 0:
+            idx = jnp.argmax(goal_mask)
+            sol_cost = tree.costs[start_idx + idx]
 
-            # Update incumbent
-            if goal > 0:
-                idx = jnp.argmax(goal_mask)
-                sol_cost = float(tree.costs[start_idx + idx])
-                if sol_cost < best_cost:
-                    best_cost = sol_cost
+            if sol_cost < best_cost:
+                best_cost = sol_cost
 
-            # Log Data
-            all_run_data.append({
-                "Run": run_id,
-                "Iteration": ao_iter,
-                "Best Cost": best_cost if best_cost != float('inf') else None,
-                "Cumulative Time": elapsed
-            })
+                times.append(elapsed)
+                costs.append(sol_cost)
 
-            # Update GMM based on the current tree state
-            X_update, sample_weights = extract_gmm_training_data(tree, states, goal_mask, start_idx)
-            gmm_params = fit_gmm_from_data(X_update, K=10)
-            
-            ao_iter += 1
-            print(f"Iter {ao_iter:02d} | Time: {elapsed:5.2f}s | Best Cost: {best_cost:.4f} | Nodes: {size}")
+                print(
+                    f"[AO iter {ao_iter:03d}] "
+                    f"time={elapsed:6.2f}s | "
+                    f"cost={sol_cost:8.3f} | "
+                    f"tree size={int(size)} | "
+                    f"iters={int(iters)}"
+                )
 
-    # --- Data Processing & Alignment ---
-    df = pd.DataFrame(all_run_data)
-    max_iters_found = df['Iteration'].max()
-    full_index = pd.MultiIndex.from_product([range(N_RUNS), range(max_iters_found + 1)], names=['Run', 'Iteration'])
-    df_aligned = df.set_index(['Run', 'Iteration']).reindex(full_index)
-    df_aligned['Best Cost'] = df_aligned.groupby('Run')['Best Cost'].ffill()
-    df_aligned['Cumulative Time'] = df_aligned.groupby('Run')['Cumulative Time'].ffill()
-    df_final = df_aligned.reset_index().dropna(subset=["Best Cost"])
+        # ------------------------------------------------------------
+        # Update GMM after each iteration
+        # ------------------------------------------------------------
+        # Extract states to fit GMM: use all valid expanded nodes in tree
+        # For simplicity, use tree.states[:tree.tree_size]
+        X_update, sample_weights = extract_gmm_training_data(tree, states, goal_mask, start_idx)
 
-    # --- Visualization ---
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        gmm_params = fit_gmm_from_data(X_update, K=10)
 
-    # Graph 1: Convergence
-    sns.lineplot(data=df_final, x="Iteration", y="Best Cost", ax=ax1, color="dodgerblue", errorbar='sd', label="Mean AO-RRT Cost")
-    ax1.axhline(y=GT_MIN_COST, color='red', linestyle='--', label=f'GT Min ({GT_MIN_COST})')
-    ax1.set_title("Cost Convergence (N=5 Runs)")
-    ax1.set_ylabel("Best Cost")
-    ax1.grid(True, alpha=0.3)
-    ax1.legend()
+        p_gmm = 0.5
 
-    # Graph 2: Iteration Timing
-    sns.lineplot(data=df_final, x="Iteration", y="Cumulative Time", ax=ax2, color="forestgreen", errorbar='sd')
-    ax2.set_title("Cumulative Runtime Deviation")
-    ax2.set_ylabel("Time (s)")
-    ax2.grid(True, alpha=0.3)
+        ao_iter += 1
 
-    plt.tight_layout()
-    plt.show()
-
-    # t0 = time.perf_counter()
-    # ao_iter = 0
-    # times = []
-    # costs = []
-    # best_cost = jnp.inf
-
-    # while True:
-    #     elapsed = time.perf_counter() - t0
-    #     if elapsed >= MAX_TIME:
-    #         break
-
-    #     rnd = np.random.randint(0, 2**31 - 1)
-    #     tree, key, goal_mask, goal, states, start_idx, iters, size = jit_while(
-    #         tree,
-    #         sst_params,
-    #         sim_params,
-    #         callables,
-    #         obstacles,
-    #         best_cost,
-    #         rnd,
-    #         gmm_params,
-    #         p_gmm
-    #     )
-
-    #     # If at least one goal reached, update incumbent
-    #     if goal > 0:
-    #         idx = jnp.argmax(goal_mask)
-    #         sol_cost = tree.costs[start_idx + idx]
-
-    #         if sol_cost < best_cost:
-    #             best_cost = sol_cost
-
-    #             times.append(elapsed)
-    #             costs.append(sol_cost)
-
-    #             print(
-    #                 f"[AO iter {ao_iter:03d}] "
-    #                 f"time={elapsed:6.2f}s | "
-    #                 f"cost={sol_cost:8.3f} | "
-    #                 f"tree size={int(size)} | "
-    #                 f"iters={int(iters)}"
-    #             )
-
-    #     # ------------------------------------------------------------
-    #     # Update GMM after each iteration
-    #     # ------------------------------------------------------------
-    #     # Extract states to fit GMM: use all valid expanded nodes in tree
-    #     # For simplicity, use tree.states[:tree.tree_size]
-    #     X_update, sample_weights = extract_gmm_training_data(tree, states, goal_mask, start_idx)
-
-    #     gmm_params = fit_gmm_from_data(X_update, K=10)
-
-    #     p_gmm = 0.5
-
-    #     ao_iter += 1
-
-    # # ------------------------------------------------------------
-    # # Print final GMM metrics
-    # # ------------------------------------------------------------
-    # print("\nFinal GMM metrics:")
-    # print("Weights:", gmm_params.weights)
-    # print("Means (first 3 components):", gmm_params.means[:3])
-    # print("Covariances (first 3 components):", gmm_params.covs[:3])
+    # ------------------------------------------------------------
+    # Print final GMM metrics
+    # ------------------------------------------------------------
+    print("\nFinal GMM metrics:")
+    print("Weights:", gmm_params.weights)
+    print("Means (first 3 components):", gmm_params.means[:3])
+    print("Covariances (first 3 components):", gmm_params.covs[:3])
 
 
-    # print("\nAO-RRT finished.")
-    # lower_bound_cost = jnp.linalg.norm(
-    #     jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]) -
-    #     jnp.asarray([sst_params.goal.x, sst_params.goal.y, sst_params.goal.z])
-    # )
-    # # ------------------------------------------------------------
-    # # Plot cost vs runtime (with lower bound)
-    # # ------------------------------------------------------------
-    # if len(times) > 0:
-    #     times = np.asarray(times)
-    #     costs = np.asarray(costs)
+    print("\nAO-RRT finished.")
+    lower_bound_cost = jnp.linalg.norm(
+        jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]) -
+        jnp.asarray([sst_params.goal.x, sst_params.goal.y, sst_params.goal.z])
+    )
+    # ------------------------------------------------------------
+    # Plot cost vs runtime (with lower bound)
+    # ------------------------------------------------------------
+    if len(times) > 0:
+        times = np.asarray(times)
+        costs = np.asarray(costs)
 
-    #     plt.figure(figsize=(6, 4))
+        plt.figure(figsize=(6, 4))
 
-    #     # AO-RRT cost improvement
-    #     plt.plot(
-    #         times,
-    #         costs,
-    #         marker="o",
-    #         label="AO-RRT best cost",
-    #     )
+        # AO-RRT cost improvement
+        plt.plot(
+            times,
+            costs,
+            marker="o",
+            label="AO-RRT best cost",
+        )
 
-    #     # Lower-bound (straight-line)
-    #     plt.hlines(
-    #         y=lower_bound_cost,
-    #         xmin=0.0,
-    #         xmax=times[-1],
-    #         linestyles="dashed",
-    #         label="Straight-line lower bound",
-    #     )
+        # Lower-bound (straight-line)
+        plt.hlines(
+            y=lower_bound_cost,
+            xmin=0.0,
+            xmax=times[-1],
+            linestyles="dashed",
+            label="Straight-line lower bound",
+        )
 
-    #     plt.xlabel("Runtime (s)")
-    #     plt.ylabel("Cost")
-    #     plt.title("AO-RRT anytime performance")
-    #     plt.legend()
-    #     plt.grid(True)
-    #     plt.tight_layout()
-    #     plt.show()
-    # else:
-    #     print("No solution found within time limit.")
+        plt.xlabel("Runtime (s)")
+        plt.ylabel("Cost")
+        plt.title("AO-RRT anytime performance")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+    else:
+        print("No solution found within time limit.")
 
 
 
