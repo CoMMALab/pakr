@@ -175,10 +175,10 @@ goal_qc = Position(
 )
 
 #batch_size = 16384
-#batch_size = 32768
+batch_size = 32768
 #batch_size = 131072
 #batch_size = 65536
-batch_size = 1024
+#batch_size = 4096
 seed = 0
 time_to_evolve = 10
 # Safe params

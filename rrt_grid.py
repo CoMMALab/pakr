@@ -42,53 +42,134 @@ def nn_tier_factory(size):
 TIERS = [512, 1024, 4096, 16384, 32768, 33000]
 NN_BRANCHES = [nn_tier_factory(t) for t in TIERS]
 
+# @partial(jax.jit, static_argnums=(3, 4, 5))
+# def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
+#     """One batched kinodynamic RRT iteration with tiered NN search."""
+#     rng_key, subkey1, subkey2 = jax.random.split(rng_key, 3)
+
+#     # 1. Sample target points
+#     seed_pts = callables.sample_fn(sim_params, subkey1)
+
+#     # 2. Tiered Nearest Neighbor Lookup (Voronoi bias)
+#     branch_idx = jnp.digitize(tree.tree_size, jnp.array(TIERS))
+#     branch_idx = jnp.minimum(branch_idx, len(TIERS) - 1)
+
+#     # Only pass JAX arrays/scalars to the switch
+#     operands = (tree.states, tree.tree_size, seed_pts)
+#     parents = jax.lax.switch(branch_idx, NN_BRANCHES, operands)
+    
+#     start_states = tree.states[parents]
+
+#     # 3. Sample actions and rollout
+#     actions = callables.sampact_fn(sim_params, subkey2)
+#     states_end, valid_mask, dist_traveled = propagate.rollout_final(
+#         start_states, actions, obstacles, sst_params, sim_params, callables
+#     )
+
+#     # 4. Padding for static shapes
+#     valid_mask = valid_mask.at[-1].set(False)
+#     states_end = states_end.at[-1].set(jnp.zeros(sim_params.dims))
+#     actions = actions.at[-1].set(jnp.zeros(sim_params.action_dims))
+#     parents = parents.at[-1].set(-1)
+#     dist_traveled = dist_traveled.at[-1].set(0.0)
+
+#     # 5. Filter valid insertions
+#     num_new = jnp.sum(valid_mask)
+#     valid_idx = jnp.nonzero(valid_mask, size=sim_params.batch_size, fill_value=-1)[0]
+
+#     new_states = states_end[valid_idx]
+#     new_actions = actions[valid_idx]
+#     new_parents = parents[valid_idx]
+#     new_costs = tree.costs[new_parents] + dist_traveled[valid_idx]
+
+#     # 6. Insert nodes
+#     tree, start_idx = rrtree.add_nodes(
+#         tree, new_states, new_actions, new_parents, new_costs, num_new
+#     )
+
+#     # 7. Goal check
+#     goal_mask = helper.reached_goal(new_states, sst_params.goal, sst_params.goal_radius)
+
+#     return tree, rng_key, goal_mask, jnp.sum(goal_mask), new_states, start_idx
+
 @partial(jax.jit, static_argnums=(3, 4, 5))
 def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
-    """One batched kinodynamic RRT iteration with tiered NN search."""
+    """One batched kinodynamic RRT iteration with reduced NN calls (B/64 parents × 64 actions)."""
+
+    B = sim_params.batch_size
+    A = 64
+    K = B // A  # number of NN queries
+
     rng_key, subkey1, subkey2 = jax.random.split(rng_key, 3)
 
-    # 1. Sample target points
+    # -------------------------------------------------
+    # 1. Sample only K target points
+    # -------------------------------------------------
     seed_pts = callables.sample_fn(sim_params, subkey1)
+    seed_pts = seed_pts[:K]
 
-    # 2. Tiered Nearest Neighbor Lookup (Voronoi bias)
+    # -------------------------------------------------
+    # 2. Tiered Nearest Neighbor Lookup (only K queries)
+    # -------------------------------------------------
     branch_idx = jnp.digitize(tree.tree_size, jnp.array(TIERS))
     branch_idx = jnp.minimum(branch_idx, len(TIERS) - 1)
 
-    # Only pass JAX arrays/scalars to the switch
     operands = (tree.states, tree.tree_size, seed_pts)
-    parents = jax.lax.switch(branch_idx, NN_BRANCHES, operands)
-    
-    start_states = tree.states[parents]
+    parents_small = jax.lax.switch(branch_idx, NN_BRANCHES, operands)  # shape (K,)
 
-    # 3. Sample actions and rollout
-    actions = callables.sampact_fn(sim_params, subkey2)
+    start_states_small = tree.states[parents_small]  # (K, dims)
+
+    # -------------------------------------------------
+    # 3. Repeat each parent 64 times
+    # -------------------------------------------------
+    start_states = jnp.repeat(start_states_small, A, axis=0)  # (B, dims)
+    parents = jnp.repeat(parents_small, A, axis=0)            # (B,)
+
+    # -------------------------------------------------
+    # 4. Sample B actions (64 per parent implicitly)
+    # -------------------------------------------------
+    actions = callables.sampact_fn(sim_params, subkey2)  # (B, action_dims)
+
+    # -------------------------------------------------
+    # 5. Rollout
+    # -------------------------------------------------
     states_end, valid_mask, dist_traveled = propagate.rollout_final(
         start_states, actions, obstacles, sst_params, sim_params, callables
     )
 
-    # 4. Padding for static shapes
+    # -------------------------------------------------
+    # 6. Static padding for JIT shape safety
+    # -------------------------------------------------
     valid_mask = valid_mask.at[-1].set(False)
     states_end = states_end.at[-1].set(jnp.zeros(sim_params.dims))
     actions = actions.at[-1].set(jnp.zeros(sim_params.action_dims))
     parents = parents.at[-1].set(-1)
     dist_traveled = dist_traveled.at[-1].set(0.0)
 
-    # 5. Filter valid insertions
+    # -------------------------------------------------
+    # 7. Filter valid insertions
+    # -------------------------------------------------
     num_new = jnp.sum(valid_mask)
-    valid_idx = jnp.nonzero(valid_mask, size=sim_params.batch_size, fill_value=-1)[0]
+    valid_idx = jnp.nonzero(valid_mask, size=B, fill_value=-1)[0]
 
     new_states = states_end[valid_idx]
     new_actions = actions[valid_idx]
     new_parents = parents[valid_idx]
     new_costs = tree.costs[new_parents] + dist_traveled[valid_idx]
 
-    # 6. Insert nodes
+    # -------------------------------------------------
+    # 8. Insert nodes
+    # -------------------------------------------------
     tree, start_idx = rrtree.add_nodes(
         tree, new_states, new_actions, new_parents, new_costs, num_new
     )
 
-    # 7. Goal check
-    goal_mask = helper.reached_goal(new_states, sst_params.goal, sst_params.goal_radius)
+    # -------------------------------------------------
+    # 9. Goal check
+    # -------------------------------------------------
+    goal_mask = helper.reached_goal(
+        new_states, sst_params.goal, sst_params.goal_radius
+    )
 
     return tree, rng_key, goal_mask, jnp.sum(goal_mask), new_states, start_idx
 
@@ -117,7 +198,7 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, i):
     tree, key, goal_mask, goal, states, start_idx, iter = jax.lax.while_loop(cond_fn, body_fn, init_carry)
     return tree, key, goal_mask, goal, states, start_idx, iter, tree.tree_size
 
-MAX_TREE_SIZE = 33000
+MAX_TREE_SIZE = 50000
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
