@@ -592,7 +592,7 @@ def dist_EEB(sim_params, diff):
     rpy_cost = jnp.sum(drpy**2, axis=-1)
 
     w_q, w_xyz, w_rpy = 1.0, 1.0, 0.1
-    return w_q*q_cost + w_xyz*xyz_cost + w_rpy*rpy_cost
+    return (w_q*q_cost + w_xyz*xyz_cost + w_rpy*rpy_cost).T
 
 @partial(jax.jit, static_argnums=(0,))
 def sample_actions_EEB(sim_params, key):
@@ -637,7 +637,7 @@ def check_valid_eeb(states, params):
     block_xy = states[:, 4:6]
     dq = states[:, 2:4]
 
-    joint_ok = jnp.all((q >= params.motion_constraints.min_vel) & (q <= params.motion_constraints.max_vel), axis=-1)
+    joint_ok = jnp.all((q >= params.bounds.min_x) & (q <= params.bounds.max_x), axis=-1)
     table_ok = (block_xy[:, 0] >= params.bounds.min_x) & (block_xy[:, 0] <= params.bounds.max_x) & \
                (block_xy[:, 1] >= params.bounds.min_y) & (block_xy[:, 1] <= params.bounds.max_y)
     vel_ok = jnp.all((dq >= params.motion_constraints.min_vel) & (dq <= params.motion_constraints.max_vel), axis=-1)

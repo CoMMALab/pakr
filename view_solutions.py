@@ -3,69 +3,36 @@ import numpy as np
 import mujoco
 import mujoco.viewer
 
-# -----------------------------
-# Load model
-# -----------------------------
+# 1. Load Model and Data
 model = mujoco.MjModel.from_xml_path("models/eeonly.xml")
 data = mujoco.MjData(model)
 
-# -----------------------------
-# Load saved solution
-# -----------------------------
-actions = np.load("solution_actions.npy")
-states = np.load("solution_states.npy")
+# 2. Load Pre-computed MJX Trajectory
+# Expected shape: (Total Steps, nq + nv)
+trajectory = np.load("mjx_full_trajectory.npy")
+nq = model.nq
 
-T = actions.shape[0]
+print(f"Loaded trajectory with {len(trajectory)} frames.")
 
-# -----------------------------
-# Helper: set state
-# State format:
-# [ ball_x, ball_y,
-#   ball_dx, ball_dy,
-#   block_x, block_y, block_theta,
-#   block_dx, block_dy, block_dtheta ]
-# -----------------------------
-def set_state_from_array(data, state):
-    # qpos layout:
-    # [ball_x, ball_y, block_x, block_y, block_theta]
-    data.qpos[:] = [
-        state[0],  # ball_x
-        state[1],  # ball_y
-        state[4],  # block_x
-        state[5],  # block_y
-        state[6],  # block_theta
-    ]
-
-    # qvel layout:
-    # [ball_dx, ball_dy, block_dx, block_dy, block_dtheta]
-    data.qvel[:] = [
-        state[2],  # ball_dx
-        state[3],  # ball_dy
-        state[7],  # block_dx
-        state[8],  # block_dy
-        state[9],  # block_dtheta
-    ]
-
-    mujoco.mj_forward(model, data)
-
-
-# -----------------------------
-# Initialize to first state
-# -----------------------------
-SUBSTEPS = 50
-set_state_from_array(data, states[0])
-
-# -----------------------------
-# Launch viewer
-# -----------------------------
+# 3. Playback Loop
 with mujoco.viewer.launch_passive(model, data) as viewer:
+    # Optional: Reset camera or settings here
+    viewer.cam.distance = 3.0 
+    
+    for state in trajectory:
+        if not viewer.is_running():
+            break
+            
+        # Split state back into qpos and qvel
+        data.qpos[:] = state[:nq]
+        data.qvel[:] = state[nq:]
+        
+        # Compute forward kinematics for visualization
+        mujoco.mj_forward(model, data)
+        
+        viewer.sync()
+        
+        # Match the simulation timestep for real-time speed
+        time.sleep(model.opt.timestep)
 
-    for t in range(T-1):
-        for _ in range(SUBSTEPS):
-            data.ctrl[:] = actions[t+1]
-            mujoco.mj_step(model, data)
-
-            viewer.sync()
-            time.sleep(model.opt.timestep)
-
-    print("Playback finished.")
+print("Playback finished.")

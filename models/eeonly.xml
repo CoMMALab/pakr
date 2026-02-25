@@ -1,10 +1,9 @@
 <mujoco model="ball_block_2d">
 
-  <!-- Use implicit integrator for stability -->
   <option timestep="0.03"
           gravity="0 0 -9.81"/>
 
-  <size njmax="200" nconmax="100"/>
+  <size njmax="20" nconmax="10"/>
 
   <!-- Softer contact + reasonable friction -->
   <default>
@@ -17,9 +16,11 @@
 
     <!-- Ground plane -->
     <geom type="plane" size="5 5 0.1" rgba="0.9 0.9 0.9 1"/>
+    <!-- Visual marker (green circle at 0.3, 0) -->
+    <geom type="cylinder" pos="0.3 0.0 0.001" size="0.05 0.001" rgba="0 1 0 1" contype="0" conaffinity="0"/>  
 
     <!-- Ball (lighter + damped) -->
-    <body name="ball" pos="0 0.3 0.05">
+    <body name="ball" pos="-0.1 0.0 0.05">
       <joint name="ball_x" type="slide" axis="1 0 0" damping="2"/>
       <joint name="ball_y" type="slide" axis="0 1 0" damping="2"/>
 
