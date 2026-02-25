@@ -153,7 +153,7 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, i):
     tree, key, goal_mask, goal, states, start_idx, iter = jax.lax.while_loop(cond_fn, body_fn, init_carry)
     return tree, key, goal_mask, goal, states, start_idx, iter, tree.tree_size
 
-MAX_TREE_SIZE = 200000
+MAX_TREE_SIZE = 50000
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')

@@ -180,7 +180,7 @@ batch_size = 32768
 #batch_size = 65536
 #batch_size = 8192
 seed = 0
-time_to_evolve = 10
+time_to_evolve = 30
 # Safe params
 
 # callables_MCP = Callables(
@@ -314,8 +314,8 @@ frb_motion_constraints = MotionConstraints(
 eeb_motion_constraints = MotionConstraints(
     min_vel = -1.0,
     max_vel = 1.0,
-    min_torque = -8.0,
-    max_torque = 8.0
+    min_torque = -3.0,
+    max_torque = 3.0
 )
 
 # Workspace bounds for the block
@@ -376,7 +376,7 @@ sst_params_EEB = SSTparams(
     δBN=0.2,
     δs=0.15,
     decay=0.8,
-    start=Position(x=0.0, y=0.0, z=0.0), # z is theta
+    start=Position(x=0.1, y=0.0, z=0.0), # z is theta
     goal=Position(x=0.3, y=0.0, z=0.0),
     goal_radius=0.05,
     geo_cost_to_go_weight=0.0,

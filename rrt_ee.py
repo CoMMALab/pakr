@@ -17,39 +17,80 @@ import mujoco.mjx as mjx
 from franka_prop import make_ball_block_propagate_fn, make_franka_propagate_fn
 from rrtsolcheck import extract_sol, verify_sol
 
+# Global references to allow the switch branches to access static objects via closure
+SIM_PARAMS_RESERVED = None
+CALLABLES_RESERVED = None
+
+def nn_tier_factory(size):
+    """Generates a function for lax.switch that scans a fixed slice of the tree."""
+    def nn_fn(operands):
+        states, tree_size, query = operands
+        sliced_states = states[:size]
+        
+        # Access static objects from outer scope
+        parents, _ = helper.nearest_neighbor_masked(
+            SIM_PARAMS_RESERVED, 
+            CALLABLES_RESERVED.dist_fn, 
+            sliced_states, 
+            tree_size, 
+            query
+        )
+        return parents
+    return nn_fn
+
+# Define memory buckets
+TIERS = [512, 1024, 4096, 16384, 32768, 250000]
+NN_BRANCHES = [nn_tier_factory(t) for t in TIERS]
+
+
 @partial(jax.jit, static_argnums=(3, 4, 5))
 def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
     """
-    One batched kinodynamic RRT iteration:
-    - sample target states
-    - nearest-neighbor lookup (Voronoi bias)
-    - sample actions
-    - rollout
-    - insert valid endpoints
+    Upgraded MJX RRT Iteration:
+    - Tiered NN buckets to avoid re-compiling as tree grows.
+    - K NN queries expanded to B rollouts (B/A actions per parent).
     """
+    B = sim_params.batch_size
+    A = 64  # Actions per parent
+    K = B // A  # Total unique parents to find
+
     rng_key, subkey1, subkey2 = jax.random.split(rng_key, 3)
 
     # ------------------------------------------------------------------
-    # 1. Sample target points + nearest neighbor
+    # 1. Sample K target points + Tiered NN Lookup
     # ------------------------------------------------------------------
     seed_pts = callables.sample_fn(sim_params, subkey1)
-    parents, _ = helper.nearest_neighbor_mjx(
-        sim_params, callables.dist_fn, tree.states, tree.tree_size, seed_pts
-    )
-    start_states = tree.states[parents]
+    seed_pts_small = seed_pts[:K] # Only need K seeds
 
+    # Use lax.switch to choose a bucketed NN kernel based on tree_size
+    branch_idx = jnp.digitize(tree.tree_size, jnp.array(TIERS))
+    branch_idx = jnp.minimum(branch_idx, len(TIERS) - 1)
+    
+    operands = (tree.states, tree.tree_size, seed_pts_small)
+    parents_small = jax.lax.switch(branch_idx, NN_BRANCHES, operands)
 
     # ------------------------------------------------------------------
-    # 2. Sample actions and rollout
+    # 2. Expand K parents to B rollouts
     # ------------------------------------------------------------------
+    start_states_small = tree.states[parents_small]
+    
+    # Repeat states and parent indices A times each to reach Batch Size B
+    start_states = jnp.repeat(start_states_small, A, axis=0)
+    parents = jnp.repeat(parents_small, A, axis=0)
+
+    # Sample unique actions for every rollout in the batch
     actions = callables.sampact_fn(sim_params, subkey2)
 
+    # ------------------------------------------------------------------
+    # 3. MJX Propagate (Rollout)
+    # ------------------------------------------------------------------
+    # Using callables.prop_fn which points to your MJX make_ball_block_propagate_fn
     states_end, valid_mask, dist_traveled = callables.prop_fn(
         start_states, actions, obstacles, sst_params, sim_params
     )
 
     # ------------------------------------------------------------------
-    # 3. Padding for static shapes
+    # 4. Padding & Filtering (Standard JAX-RRT Logic)
     # ------------------------------------------------------------------
     valid_mask = valid_mask.at[-1].set(False)
     states_end = states_end.at[-1].set(jnp.zeros(sim_params.dims))
@@ -57,38 +98,22 @@ def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
     parents = parents.at[-1].set(-1)
     dist_traveled = dist_traveled.at[-1].set(0.0)
 
-    # ------------------------------------------------------------------
-    # 4. Filter valid insertions (index-based masking)
-    # ------------------------------------------------------------------
     num_new = jnp.sum(valid_mask)
-
-    valid_idx = jnp.nonzero(
-        valid_mask,
-        size=sim_params.batch_size,
-        fill_value=-1
-    )[0]
+    valid_idx = jnp.nonzero(valid_mask, size=B, fill_value=-1)[0]
 
     new_states = states_end[valid_idx]
     new_actions = actions[valid_idx]
     new_parents = parents[valid_idx]
-
     new_costs = tree.costs[new_parents] + dist_traveled[valid_idx]
 
     # ------------------------------------------------------------------
-    # 5. Insert nodes
+    # 5. Insert & MJX-Specific Goal Check
     # ------------------------------------------------------------------
     tree, start_idx = rrtree.add_nodes(
-        tree,
-        new_states,
-        new_actions,
-        new_parents,
-        new_costs,
-        num_new
+        tree, new_states, new_actions, new_parents, new_costs, num_new
     )
 
-    # ------------------------------------------------------------------
-    # 6. Goal check
-    # ------------------------------------------------------------------
+    # Maintain your specific ball-block goal check
     goal_mask = helper.reached_goal_EEB(
         new_states, sst_params.goal, sst_params.goal_radius
     )
@@ -126,7 +151,7 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, i):
     tree, key, goal_mask, goal, states, start_idx, iter = jax.lax.while_loop(cond_fn, body_fn, init_carry)
     return tree, key, goal_mask, goal, states, start_idx, iter, tree.tree_size
 
-MAX_TREE_SIZE = 100000
+MAX_TREE_SIZE = 250000
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
     parser.add_argument('--env', type=str, default='envs/tree.csv', help='Path to the environment config file.')
@@ -200,7 +225,8 @@ if __name__ == "__main__":
             exit
 
     
-    
+    SIM_PARAMS_RESERVED = sim_params
+    CALLABLES_RESERVED = callables
 
 
     obstacles = helper.get_obs("envs/empty.csv")
@@ -221,7 +247,7 @@ if __name__ == "__main__":
     )
 
     init_state = init_state.at[0:2].set(
-        jnp.array([-0.1, 0.0], dtype=jnp.float32)
+        jnp.array([0.3, 0.0], dtype=jnp.float32)
     )
 
     print(init_state, sst_params.goal.x, sst_params.goal.y, sst_params.goal.z)
@@ -231,20 +257,37 @@ if __name__ == "__main__":
     # add initial node to tree
     tree, _ = rrtree.add_nodes(tree, init_state, init_controls, -1, 0.0, 1)
 
+
     # ---------------------------
-    # 5. Dummy run to trigger JIT
+    # 5. Multi-Step Warmup
     # ---------------------------
-    print("Compiling JIT...")
+    print("Compiling JIT (Step 1: Empty Tree)...")
     dummy_key = jax.random.PRNGKey(0)
-    _, _, xx= callables.prop_fn(
-        jnp.tile(init_state[None, :], (sim_params.batch_size, 1)),
-        jnp.zeros((sim_params.batch_size, sim_params.action_dims)),
-        obstacles,
-        sst_params,
-        sim_params,
+    
+    # First pass: Tree size 1 -> size (1 + batch_size)
+    tree, dummy_key, _, _, _, _ = rrt_iteration(
+        tree, dummy_key, obstacles, sst_params, sim_params, callables
     )
-    xx.block_until_ready()
-    print("JIT compilation done!")
+    tree.states.block_until_ready()
+
+    print("Compiling JIT (Step 2: Non-Empty Tree)...")
+    # Second pass: Tree size (1 + batch_size) -> size (1 + 2*batch_size)
+    # This triggers JAX to handle the 'non-empty' logic path in NN search
+    tree, dummy_key, _, _, _, _ = rrt_iteration(
+        tree, dummy_key, obstacles, sst_params, sim_params, callables
+    )
+    tree.states.block_until_ready()
+    
+    print("JIT compilation done! Resetting tree for actual run...")
+    
+    # Reset tree to original state (size 1) before the actual loop starts
+    tree = rrtree.KinoTree.init(
+            max_size=MAX_TREE_SIZE,
+            state_dim=sim_params.dims,
+            action_dim=sim_params.action_dims
+        )
+    tree = jax.device_put(tree)
+    tree, _ = rrtree.add_nodes(tree, init_state, init_controls, -1, 0.0, 1)
 
     # ---------------------------
     # 6. Run RRT once
@@ -264,10 +307,10 @@ if __name__ == "__main__":
     # print(f"Iterations: {iterations}, tree size: {size}, goal reached: {jnp.sum(goal_mask)}")
 
     best_dist = jnp.inf
-    key = jax.random.PRNGKey(0)
+    key = np.random.randint(0, 1e6)
     for i in range(200):
         key, subkey = jax.random.split(key)
-
+        start_p = time.perf_counter()
         tree, key, goal_mask, goal_count, states, start_idx = rrt_iteration(
             tree,
             subkey,
@@ -280,6 +323,7 @@ if __name__ == "__main__":
         # Force execution (important for timing + debugging)
         goal_mask = goal_mask.block_until_ready()
         states = states.block_until_ready()
+        timer = time.perf_counter() - start_p
         #print(states)
         # --------------------------------------------------
         # Distance-to-goal tracking
@@ -305,7 +349,8 @@ if __name__ == "__main__":
             f"[iter {i:03d}] "
             f"tree_size={int(tree.tree_size)} | "
             f"new_goal={int(jnp.sum(goal_mask))} | "
-            f"best_dist={float(best_dist):.4f}"
+            f"best_dist={float(best_dist):.4f} | "
+            f"iter_time={timer*1e3:.2f} ms"
         )
 
         # --------------------------------------------------
@@ -314,8 +359,10 @@ if __name__ == "__main__":
         if jnp.any(goal_mask):
             print(f"\n🎯 Goal reached at iteration {i}")
             path, actions = extract_sol(tree, goal_mask, start_idx)
+            print(path)
+            print(actions)
             np.save("solution_actions.npy", np.array(actions))
-            np.save("solution_states.npy", np.array(states))
+            np.save("solution_states.npy", np.array(path))
             break
 
 
