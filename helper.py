@@ -135,7 +135,7 @@ def sample_DA(sim_params, key):
     key_x, key_y, key_z, key_yaw, key_pitch, key_v = jax.random.split(key, 6)
     x = jax.random.uniform(key_x, (num_samples, 1), minval=sim_params.bounds.min_x, maxval=sim_params.bounds.max_x)
     y = jax.random.uniform(key_y, (num_samples, 1), minval=sim_params.bounds.min_y, maxval=sim_params.bounds.max_y)
-    z = jax.random.uniform(key_z, (num_samples, 1), mminval=sim_params.bounds.min_z, maxval=sim_params.bounds.max_z)
+    z = jax.random.uniform(key_z, (num_samples, 1), minval=sim_params.bounds.min_z, maxval=sim_params.bounds.max_z)
     yaw = jax.random.uniform(key_yaw, (num_samples, 1), minval=sim_params.motion_constraints.min_yaw, maxval=sim_params.motion_constraints.max_yaw)
     pitch = jax.random.uniform(key_pitch, (num_samples, 1), minval=sim_params.motion_constraints.min_pitch, maxval=sim_params.motion_constraints.max_pitch)
     v = jax.random.uniform(key_v, (num_samples, 1), minval=sim_params.motion_constraints.min_vel, maxval=sim_params.motion_constraints.max_vel)
@@ -254,7 +254,7 @@ def dist_DA(sim_params, diff):
     
     # Compute pairwise distances
     dist2 = dx**2 + dy**2 + dz**2 + yaw_delta**2 + pitch_delta**2 + dv**2
-    return dist2 / 6
+    return dist2.T / 6
 
 @partial(jax.jit, static_argnums=(0))
 def dist_QC(sim_params, diff):

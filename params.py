@@ -2,7 +2,7 @@ import jax
 from flax import struct
 import jax.numpy as jnp
 import mujoco
-import mujoco.mjx as mjx
+#import mujoco.mjx as mjx
 from queue import PriorityQueue
 import propagate
 import helper
@@ -175,10 +175,10 @@ goal_qc = Position(
 )
 
 #batch_size = 16384
-#batch_size = 32768
+batch_size = 32768
 #batch_size = 131072
 #batch_size = 65536
-batch_size = 1024
+#batch_size = 8192
 seed = 0
 time_to_evolve = 10
 # Safe params

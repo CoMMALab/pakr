@@ -50,3 +50,10 @@ best_nearest, check_dominating_nodes are jax compatible. Advanced indexing (arra
 
 sst and sst* are not jax compatible. The outer loop includes witness pruning and storing solutions using a heapq. The inner loop has to pass the SSTree object.
 It is still fast because it is manually vectorized
+
+
+
+docker build -t mjx .
+docker run --gpus all -it -v $(pwd):/workspace -w /workspace mjx bash
+
+pip install --upgrade "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html

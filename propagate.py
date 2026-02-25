@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-import mujoco.mjx as mjx
+#import mujoco.mjx as mjx
 from functools import partial
 import helper
 
