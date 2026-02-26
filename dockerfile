@@ -25,7 +25,7 @@ WORKDIR /workspace
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
 
 # 4. Install JAX with CUDA 12 support
-RUN pip3 install --no-cache-dir "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+RUN pip3 install --upgrade "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 
 CMD ["/bin/bash"]
 # 5. Install MuJoCo + MJX explicitly
@@ -42,5 +42,7 @@ RUN pip3 install --no-cache-dir \
     optax \
     chex \
     PyYAML \
-    jupyterlab
+    jupyterlab \
+    seaborn
+
 

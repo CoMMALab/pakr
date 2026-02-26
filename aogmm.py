@@ -178,328 +178,239 @@ def biased_sample_fn(sim_params, key, callables, gmm: GMMParams, p_gmm: float = 
     return jnp.where(use_gmm, x_gmm, x_uni)
 
 
+# Global markers for the factory to access
+SIM_PARAMS_RESERVED = None
+CALLABLES_RESERVED = None
+
+# --- NN TIER LOGIC ---
+# Adjust these buckets based on your MAX_TREE_SIZE
+TIERS = [512, 1024, 4096, 16384, 32768, 64536, 100000]
+
+def nn_tier_factory(size):
+    """Generates a function for lax.switch that scans a fixed slice of the tree."""
+    def nn_fn(operands):
+        states, tree_size, query = operands
+        sliced_states = states[:size]
+        
+        # Access static objects from outer scope
+        parents, _ = helper.nearest_neighbor_masked(
+            SIM_PARAMS_RESERVED, 
+            CALLABLES_RESERVED.dist_fn, 
+            sliced_states, 
+            tree_size, 
+            query
+        )
+        return parents
+    return nn_fn
+
+NN_BRANCHES = [nn_tier_factory(t) for t in TIERS]
+
+# --- CORE AO-RRT LOGIC ---
+
 @partial(jax.jit, static_argnums=(3, 4, 5))
 def aorrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables, best_cost, gmm, p_gmm):
+    """
+    Optimized AO-RRT iteration: 
+    1. Biased Sampling (GMM vs Uniform)
+    2. Tiered NN via jax.lax.switch (K parents)
+    3. Multi-action expansion (A actions per parent)
+    4. AO-Pruning (f-cost < best_cost)
+    """
+    B = sim_params.batch_size
+    A = 128            # Actions per parent
+    K = B // A         # Number of unique NN queries (parents)
+    
     rng_key, subkey1, subkey2 = jax.random.split(rng_key, 3)
 
-    # 1. Sample + NN
-    seed_pts = biased_sample_fn(sim_params, subkey1, callables, gmm, p_gmm)
-    parents, _ = helper.nearest_neighbor_masked(
-        sim_params, callables.dist_fn, tree.states, tree.tree_size, seed_pts
-    )
-    start_states = tree.states[parents]
+    # 1. Sample K seed points (using GMM bias function)
+    seed_pts = biased_sample_fn(sim_params, subkey1, callables, gmm, p_gmm)[:K]
 
-    # 2. Rollout
+    # 2. Tiered Nearest Neighbor (Switch logic)
+    branch_idx = jnp.digitize(tree.tree_size, jnp.array(TIERS))
+    branch_idx = jnp.minimum(branch_idx, len(TIERS) - 1)
+    
+    operands = (tree.states, tree.tree_size, seed_pts)
+    parents_small = jax.lax.switch(branch_idx, NN_BRANCHES, operands) 
+
+    # 3. Expand Parents and Sample B Actions
+    # This repeats each of the K parents A times to fill the batch B
+    start_states = jnp.repeat(tree.states[parents_small], A, axis=0)
+    parents = jnp.repeat(parents_small, A, axis=0)
     actions = callables.sampact_fn(sim_params, subkey2)
+
+    # 4. Rollout
     states_end, valid_mask, dist_traveled = propagate.rollout_final(
         start_states, actions, obstacles, sst_params, sim_params, callables
     )
 
-    # 3. Static padding
+    # 5. Static padding for JIT consistency
     valid_mask = valid_mask.at[-1].set(False)
     states_end = states_end.at[-1].set(jnp.zeros(sim_params.dims))
     actions = actions.at[-1].set(jnp.zeros(sim_params.action_dims))
     parents = parents.at[-1].set(-1)
     dist_traveled = dist_traveled.at[-1].set(0.0)
 
-    # 4. Filter valid indices
-    valid_idx = jnp.nonzero(
-        valid_mask,
-        size=sim_params.batch_size,
-        fill_value=-1
-    )[0]
+    # 6. Calculate Costs for AO-Pruning
+    # g(n) = parent_cost + edge_cost
+    new_costs = tree.costs[parents] + dist_traveled
+    
+    # h(n) = Euclidean distance to goal (Admissible heuristic)
+    goal_vec = jnp.array([sst_params.goal.x, sst_params.goal.y, sst_params.goal.z])
+    h = jnp.linalg.norm(states_end[:, :3] - goal_vec, axis=-1)
+    
+    # 7. AO-Pruning Mask: f(n) = g(n) + h(n)
+    ao_mask = (new_costs + h <= best_cost) & valid_mask
 
-    new_states = states_end[valid_idx]
-    new_actions = actions[valid_idx]
-    new_parents = parents[valid_idx]
-
-    # g-cost
-    new_costs = tree.costs[new_parents] + dist_traveled[valid_idx]
-
-    # ---------- AO PRUNING ----------
-    goal = sst_params.goal
-    h = jnp.linalg.norm(new_states[:, :3] - jnp.asarray([goal.x, goal.y, goal.z]), axis=-1)
-    ao_mask = new_costs + h <= best_cost
-
-    # combine with validity
-    ao_mask = ao_mask & (valid_idx >= 0)
+    # 8. Filter and Compact via Nonzero
+    ao_idx = jnp.nonzero(ao_mask, size=B, fill_value=-1)[0]
     num_new = jnp.sum(ao_mask)
+    
+    final_states = states_end[ao_idx]
+    final_actions = actions[ao_idx]
+    final_parents = parents[ao_idx]
+    final_costs = new_costs[ao_idx]
 
-    # index-based masking
-    ao_idx = jnp.nonzero(
-        ao_mask,
-        size=sim_params.batch_size,
-        fill_value=-1
-    )[0]
-
-    new_states = new_states[ao_idx]
-    new_actions = new_actions[ao_idx]
-    new_parents = new_parents[ao_idx]
-    new_costs = new_costs[ao_idx]
-
-    # 5. Insert
+    # 9. Insert into Tree
     tree, start_idx = rrtree.add_nodes(
-        tree,
-        new_states,
-        new_actions,
-        new_parents,
-        new_costs,
-        num_new
+        tree, final_states, final_actions, final_parents, final_costs, num_new
     )
 
-    # 6. Goal check
-    goal_mask = helper.reached_goal(
-        new_states, sst_params.goal, sst_params.goal_radius
-    )
+    # 10. Goal check on the newly inserted nodes
+    goal_mask = helper.reached_goal(final_states, sst_params.goal, sst_params.goal_radius)
 
-    return tree, rng_key, goal_mask, jnp.sum(goal_mask), new_states, start_idx
-
-
+    return tree, rng_key, goal_mask, jnp.sum(goal_mask), final_states, start_idx
 
 
 @partial(jax.jit, static_argnums=(1,2,3))
 def jit_while(tree, sst_params, sim_params, callables, obstacles, best_cost, i, gmm_params, p_gmm):
-
     def body_fn(carry):
         tree, key, goal_mask, goal, states, start_idx, iter = carry
-
         key, subkey = jax.random.split(key)
-
         tree, subkey, goal_mask, goal, states, start_idx = aorrt_iteration(
-            tree,
-            subkey,
-            obstacles,
-            sst_params,
-            sim_params,
-            callables,
-            best_cost,
-            gmm_params,    # NEW argument
-            p_gmm  
+            tree, subkey, obstacles, sst_params, sim_params, callables, best_cost, gmm_params, p_gmm
         )
-
-
         return (tree, key, goal_mask, goal, states, start_idx, iter + 1)
 
     def cond_fn(carry):
-        tree, key, goal_mask, goal, states, start_idx, iter = carry
-        # Continue while goal not reached
-        return goal == 0  # or whatever scalar stopping condition
-    init_carry = (tree, 
-                  jax.random.PRNGKey(i),
-                  jnp.zeros(sim_params.batch_size, dtype=bool),
-                  jnp.array(0, dtype=jnp.int32),
-                  jnp.zeros([sim_params.batch_size, sim_params.dims], dtype=jnp.float32),
-                  jnp.array(0, dtype=jnp.int32),
-                  jnp.array(0, dtype=jnp.int32))
+        # Continue while goal not reached in this batch
+        return carry[3] == 0 
+
+    init_carry = (
+        tree, 
+        jax.random.PRNGKey(i),
+        jnp.zeros(sim_params.batch_size, dtype=bool),
+        jnp.array(0, dtype=jnp.int32),
+        jnp.zeros([sim_params.batch_size, sim_params.dims], dtype=jnp.float32),
+        jnp.array(0, dtype=jnp.int32),
+        jnp.array(0, dtype=jnp.int32)
+    )
 
     tree, key, goal_mask, goal, states, start_idx, iter = jax.lax.while_loop(cond_fn, body_fn, init_carry)
     return tree, key, goal_mask, goal, states, start_idx, iter, tree.tree_size
 
 
-
-MAX_TREE_SIZE = 70000
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Run the SST planner.')
-    parser.add_argument('--env', type=str, default='envs/tree.csv', help='Path to the environment config file.')
-    parser.add_argument('--motion', type=str, default='di', help='Define motion type: Double Integrator (di), Dubins Airplane (da), Quadcopter (qc), Mjx Cartpole (mcp)')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--env', type=str, default='envs/tree.csv')
+    parser.add_argument('--motion', type=str, default='di')
     args = parser.parse_args()
 
+    # Param Selection
     match args.motion:
         case 'di':
-            sst_params = params.sst_params_DI
-            sim_params = params.sim_params_DI
-            callables = params.Callables()
+            sst_params, sim_params, callables = params.sst_params_DI, params.sim_params_DI, params.Callables()
         case 'da':
-            sst_params = params.sst_params_DA
-            sim_params = params.sim_params_DA
-            callables = params.callables_DA
+            sst_params, sim_params, callables = params.sst_params_DA, params.sim_params_DA, params.callables_DA
         case 'qc':
-            sst_params = params.sst_params_QC
-            sim_params = params.sim_params_QC
-            callables = params.callables_QC
-        # case 'mcp':
-        #     sst_params = params.sst_params_DI
-        #     sim_params = params.sim_params_DI
-        #     callables = params.callables_MCP
-        #     # model = mujoco.MjModel.from_xml_path(xml_path)
-        #     # mjx_model = mjx.put_model(model)
-        #     # propagate_fn = make_propagate_fn(mjx_model)
-        case _:
-            print("invalid motion type")
-            exit
-
+            sst_params, sim_params, callables = params.sst_params_QC, params.sim_params_QC, params.callables_QC
     
-    
-
-
+    SIM_PARAMS_RESERVED = sim_params
+    CALLABLES_RESERVED = callables
     obstacles = helper.get_obs(args.env)
 
-    # ------------------------------------------------------------
-    # AO-RRT driver (single instance, 10s anytime run)
-    # ------------------------------------------------------------
+    MAX_TIME, MAX_TREE_SIZE = 3.0, 100000
+    N_RUNS, COST_THRESHOLD, GT_MIN_COST = 10, 1.55, 1.48
+    all_run_data, run_summaries = [], []
 
-    MAX_TIME = 10.0  # seconds
-    MAX_TREE_SIZE = 100000
-    K = 10  # number of GMM components
-    D = sim_params.dims
-
-    # ------------------------------------------------------------
-    # Tree initialization
-    # ------------------------------------------------------------
-    tree = rrtree.KinoTree.init(
-        max_size=MAX_TREE_SIZE,
-        state_dim=sim_params.dims,
-        action_dim=sim_params.action_dims
-    )
-    tree = jax.device_put(tree)
-
-    init_state = jnp.concatenate(
-        [
-            jnp.asarray(
-                [sst_params.start.x, sst_params.start.y, sst_params.start.z],
-                dtype=jnp.float32
-            ),
-            jnp.zeros(sim_params.dims - 3, dtype=jnp.float32),
-        ],
-        axis=0,
-    )
-
-    init_action = jnp.zeros(sim_params.action_dims, dtype=jnp.float32)
-    tree, _ = rrtree.add_nodes(tree, init_state, init_action, -1, 0.0, 1)
-
-    # ------------------------------------------------------------
-    # GMM initialization (seed with random rollouts)
-    # ------------------------------------------------------------
-    print("Seeding initial GMM from random rollouts...")
-    gmm_params = initialize_gmm(
-        init_state,
-        obstacles,
-        sst_params,
-        sim_params,
-        callables,
-        K=K,
-        seed_rollouts=False,
-        N_seed=5000
-    )
-
-    # Start with p_gmm = 0
-    p_gmm = 0.0
-
-    # ------------------------------------------------------------
-    # 🔥 JIT warm-up (compile once)
-    # ------------------------------------------------------------
-    print("JIT warm-up...")
-
-    _ = jit_while(
-        tree,
-        sst_params,
-        sim_params,
-        callables,
-        obstacles,
-        best_cost=jnp.inf,
-        i=0,
-        gmm_params=gmm_params,
-        p_gmm=p_gmm
-    )
-
-    # Force compilation to finish
+    # --- JIT Warmup Prep ---
+    # We initialize a temporary tree just to prime the XLA compiler
+    temp_tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.dims, sim_params.action_dims)
+    init_state = jnp.concatenate([
+        jnp.array([sst_params.start.x, sst_params.start.y, sst_params.start.z]), 
+        jnp.zeros(sim_params.dims - 3)
+    ])
+    temp_tree, _ = rrtree.add_nodes(temp_tree, init_state, jnp.zeros(sim_params.action_dims), -1, 0.0, 1)
+    
+    # Initialize an empty GMM for warmup (Identity covariance, zero mean)
+    gmm_params = {"mu": jnp.zeros((10, sim_params.dims)), "sigma": jnp.tile(jnp.eye(sim_params.dims), (10, 1, 1)), "pi": jnp.ones(10)/10}
+    
+    print("JIT warm-up (Priming Switch Branches and Multi-Action Logic)...")
+    _ = jit_while(temp_tree, sst_params, sim_params, callables, obstacles, jnp.inf, 0, gmm_params, 0.0)
     jax.block_until_ready(_)
     print("Warm-up complete.")
 
-    # ------------------------------------------------------------
-    # AO-RRT anytime loop
-    # ------------------------------------------------------------
-    print("\nStarting AO-RRT...\n")
-
-    import numpy as np
-    import matplotlib.pyplot as plt
-    import pandas as pd
-    import seaborn as sns
-    import time
-    import jax
-    import jax.numpy as jnp
-    import gc
-
-    # --- Configuration ---
-    N_RUNS = 10
-    MAX_TIME = 10.0       
-    COST_THRESHOLD = 1.55
-    GT_MIN_COST = 1.48    
-    all_run_data = []
-
+    # --- Main Anytime Loop ---
     for run_id in range(N_RUNS):
         print(f"\n--- Starting Run {run_id+1}/{N_RUNS} ---")
+        gc.collect()
         
-        # 1. CLEANUP & RESET TREE (Crucial fix)
-        gc.collect() 
+        # Fresh Tree
+        tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.dims, sim_params.action_dims)
+        tree, _ = rrtree.add_nodes(tree, init_state, jnp.zeros(sim_params.action_dims), -1, 0.0, 1)
         
-        # Initialize a fresh tree exactly like your reference RRT test
-        tree = rrtree.KinoTree.init(
-            max_size=MAX_TREE_SIZE, 
-            state_dim=sim_params.dims, 
-            action_dim=sim_params.action_dims
-        )
-        tree = jax.device_put(tree)
-        
-        # Define start state and insert root node
-        init_state = jnp.concatenate([
-            jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]), 
-            jnp.zeros(sim_params.dims - 3, dtype=jnp.float32)
-        ], axis=0)
-        controls = jnp.zeros(sim_params.action_dims)
-        
-        # Add the root node to the fresh tree
-        tree, _ = rrtree.add_nodes(tree, init_state, controls, -1, 0.0, 1)
-        
-        # 2. RESET AO-SPECIFIC PARAMETERS
-        ao_iter = 0
-        best_cost = float('inf')
-        # Reset GMM to uniform/initial state (assuming gmm_init exists or reset logic)
-        # gmm_params = init_gmm_params() 
-        
-        t0 = time.perf_counter()
-        
-        # 3. AO-RRT LOOP
+        best_cost, ao_iter, t0 = float('inf'), 0, time.perf_counter()
+        p_gmm = 0.0 # Start with purely uniform sampling
+
         while True:
             elapsed = time.perf_counter() - t0
-            
-            # Exit conditions
-            if elapsed >= MAX_TIME:
-                print(f"Run {run_id+1} hit Time Limit.")
-                break
-            if best_cost <= COST_THRESHOLD:
-                print(f"Run {run_id+1} hit Cost Threshold.")
+            if elapsed >= MAX_TIME or best_cost <= COST_THRESHOLD:
+                run_summaries.append({"cost": best_cost, "time": elapsed, "nodes": int(tree.tree_size)})
                 break
 
             rnd = np.random.randint(0, 2**31 - 1)
             
-            # Call the Adaptive JIT function
-            tree, key, goal_mask, goal, states, start_idx, iters, size = jit_while(
+            # Execute JIT loop
+            tree, _, goal_mask, goal, states, start_idx, iters, size = jit_while(
                 tree, sst_params, sim_params, callables, obstacles,
-                best_cost, rnd, gmm_params, p_gmm
+                jnp.array(best_cost, dtype=jnp.float32), rnd, gmm_params, p_gmm
             )
 
-            # Update incumbent
+            # Update solution
             if goal > 0:
-                idx = jnp.argmax(goal_mask)
-                sol_cost = float(tree.costs[start_idx + idx])
+                sol_cost = float(tree.costs[start_idx + jnp.argmax(goal_mask)])
                 if sol_cost < best_cost:
                     best_cost = sol_cost
 
-            # Log Data
             all_run_data.append({
-                "Run": run_id,
-                "Iteration": ao_iter,
+                "Run": run_id, "Iteration": ao_iter, 
                 "Best Cost": best_cost if best_cost != float('inf') else None,
                 "Cumulative Time": elapsed
             })
 
-            # Update GMM based on the current tree state
-            X_update, sample_weights = extract_gmm_training_data(tree, states, goal_mask, start_idx)
+            # Update GMM based on the new expansion
+            X_update, _ = extract_gmm_training_data(tree, states, goal_mask, start_idx)
             gmm_params = fit_gmm_from_data(X_update, K=10)
             
+            # Gradually increase GMM influence as the tree grows
+            p_gmm = min(0.7, p_gmm + 0.05) 
+            
             ao_iter += 1
-            print(f"Iter {ao_iter:02d} | Time: {elapsed:5.2f}s | Best Cost: {best_cost:.4f} | Nodes: {size}")
+            if ao_iter % 5 == 0:
+                print(f"  Iter {ao_iter:02d} | Time: {elapsed:5.2f}s | Best Cost: {best_cost:.4f} | Nodes: {size}")
+
+    # --- Final Statistics ---
+    valid_costs = [s['cost'] for s in run_summaries if s['cost'] != float('inf')]
+    success_rate = (len(valid_costs) / N_RUNS) * 100
+    
+    print("\n" + "="*35)
+    print(f"      GLOBAL STATISTICS (N={N_RUNS})")
+    print("="*35)
+    print(f"Success Rate:    {success_rate:.1f}%")
+    if valid_costs:
+        print(f"Avg Best Cost:   {np.mean(valid_costs):.4f}")
+    print(f"Avg Run Time:    {np.mean([s['time'] for s in run_summaries]):.3f}s")
+    print(f"Avg Tree Size:   {np.mean([s['nodes'] for s in run_summaries]):.0f} nodes")
+    print("="*35)
 
     # --- Data Processing & Alignment ---
     df = pd.DataFrame(all_run_data)
@@ -530,111 +441,6 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
-    # t0 = time.perf_counter()
-    # ao_iter = 0
-    # times = []
-    # costs = []
-    # best_cost = jnp.inf
-
-    # while True:
-    #     elapsed = time.perf_counter() - t0
-    #     if elapsed >= MAX_TIME:
-    #         break
-
-    #     rnd = np.random.randint(0, 2**31 - 1)
-    #     tree, key, goal_mask, goal, states, start_idx, iters, size = jit_while(
-    #         tree,
-    #         sst_params,
-    #         sim_params,
-    #         callables,
-    #         obstacles,
-    #         best_cost,
-    #         rnd,
-    #         gmm_params,
-    #         p_gmm
-    #     )
-
-    #     # If at least one goal reached, update incumbent
-    #     if goal > 0:
-    #         idx = jnp.argmax(goal_mask)
-    #         sol_cost = tree.costs[start_idx + idx]
-
-    #         if sol_cost < best_cost:
-    #             best_cost = sol_cost
-
-    #             times.append(elapsed)
-    #             costs.append(sol_cost)
-
-    #             print(
-    #                 f"[AO iter {ao_iter:03d}] "
-    #                 f"time={elapsed:6.2f}s | "
-    #                 f"cost={sol_cost:8.3f} | "
-    #                 f"tree size={int(size)} | "
-    #                 f"iters={int(iters)}"
-    #             )
-
-    #     # ------------------------------------------------------------
-    #     # Update GMM after each iteration
-    #     # ------------------------------------------------------------
-    #     # Extract states to fit GMM: use all valid expanded nodes in tree
-    #     # For simplicity, use tree.states[:tree.tree_size]
-    #     X_update, sample_weights = extract_gmm_training_data(tree, states, goal_mask, start_idx)
-
-    #     gmm_params = fit_gmm_from_data(X_update, K=10)
-
-    #     p_gmm = 0.5
-
-    #     ao_iter += 1
-
-    # # ------------------------------------------------------------
-    # # Print final GMM metrics
-    # # ------------------------------------------------------------
-    # print("\nFinal GMM metrics:")
-    # print("Weights:", gmm_params.weights)
-    # print("Means (first 3 components):", gmm_params.means[:3])
-    # print("Covariances (first 3 components):", gmm_params.covs[:3])
-
-
-    # print("\nAO-RRT finished.")
-    # lower_bound_cost = jnp.linalg.norm(
-    #     jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]) -
-    #     jnp.asarray([sst_params.goal.x, sst_params.goal.y, sst_params.goal.z])
-    # )
-    # # ------------------------------------------------------------
-    # # Plot cost vs runtime (with lower bound)
-    # # ------------------------------------------------------------
-    # if len(times) > 0:
-    #     times = np.asarray(times)
-    #     costs = np.asarray(costs)
-
-    #     plt.figure(figsize=(6, 4))
-
-    #     # AO-RRT cost improvement
-    #     plt.plot(
-    #         times,
-    #         costs,
-    #         marker="o",
-    #         label="AO-RRT best cost",
-    #     )
-
-    #     # Lower-bound (straight-line)
-    #     plt.hlines(
-    #         y=lower_bound_cost,
-    #         xmin=0.0,
-    #         xmax=times[-1],
-    #         linestyles="dashed",
-    #         label="Straight-line lower bound",
-    #     )
-
-    #     plt.xlabel("Runtime (s)")
-    #     plt.ylabel("Cost")
-    #     plt.title("AO-RRT anytime performance")
-    #     plt.legend()
-    #     plt.grid(True)
-    #     plt.tight_layout()
-    #     plt.show()
-    # else:
-    #     print("No solution found within time limit.")
 
 
 
