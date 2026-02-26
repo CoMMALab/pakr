@@ -230,16 +230,3 @@ if __name__ == "__main__":
     print(f"min time over 100 runs: {jnp.min(times)*1e3:.3f} ms, {jnp.min(iters)} iterations, min size {jnp.min(sizes)}")
     print(f"max time over 100 runs: {jnp.max(times)*1e3:.3f} ms, {jnp.max(iters)} iterations, max size {jnp.max(sizes)}")
     print(f"Average cost over 100 runs: {jnp.mean(costs):.3f}, min cost: {jnp.min(costs):.3f}, max cost: {jnp.max(costs):.3f}")
-
-    # ------------------------------------------------------------------
-    # 4. Solution Recreation
-    # ------------------------------------------------------------------
-    idx = jnp.argmax(goal_mask)
-    controls_sol, states_sol = helper.find_solution_path_rrt(tree, states, goal_mask, start_idx)
-    init_sol = jnp.concatenate([jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]), jnp.zeros(sim_params.dims - 3, dtype=jnp.float32)], axis=0)
-    
-    print("\nFinal Solution Controls:\n", controls_sol)
-    print("Final Solution States:\n", states_sol)
-    
-    waypoints, states_traj = helper.recreate_trajectory(init_sol, controls_sol, sim_params, callables.prop_fn)
-    jnp.save('cache/waypoints.npy', waypoints)

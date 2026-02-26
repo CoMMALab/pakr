@@ -181,7 +181,10 @@ if __name__ == "__main__":
         case 'frb':
             sst_params = params.sst_params_FRB
             sim_params = params.sim_params_FRB
-
+            b = 4096
+            sim_params.batch_size = b  # Reduce batch size for the more complex Franka model
+            sst_params.batch_size = b
+            sst_params.time_to_evolve = 5  # Increase time to evolve for longer rollouts
             # --- MJX model init ---
             model = mujoco.MjModel.from_xml_path("models/franka_block.xml")
             mjx_model = mjx.put_model(model)

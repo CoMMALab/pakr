@@ -317,16 +317,7 @@ if __name__ == "__main__":
         while True:
             elapsed = time.perf_counter() - t0
             
-            # Exit conditions
-            if elapsed >= MAX_TIME or best_cost <= COST_THRESHOLD:
-                # Capture the final state of this run before breaking
-                run_summaries.append({
-                    "cost": best_cost if best_cost != float('inf') else None,
-                    "time": elapsed,
-                    "nodes": int(tree.tree_size)
-                })
-                print(f"Run {run_id+1} Finished | Final Cost: {best_cost:.4f} | Time: {elapsed:.2f}s")
-                break
+            
 
             rnd = np.random.randint(0, 2**31 - 1)
             
@@ -352,8 +343,24 @@ if __name__ == "__main__":
             
             ao_iter += 1
             # Quick print for progress
-            if ao_iter % 5 == 0: # Print every 5 iters to keep console clean
-                print(f"  Iter {ao_iter:02d} | Cost: {best_cost:.4f} | Nodes: {size}")
+            # if ao_iter % 5 == 0: # Print every 5 iters to keep console clean
+            #     print(f"  Iter {ao_iter:02d} | Cost: {best_cost:.4f} | Nodes: {size}")
+            # Exit conditions
+            if elapsed >= MAX_TIME or best_cost <= COST_THRESHOLD:
+                # Capture the final state of this run before breaking
+                run_summaries.append({
+                    "cost": best_cost if best_cost != float('inf') else None,
+                    "time": elapsed,
+                    "nodes": int(tree.tree_size),
+                    "iters": ao_iter
+                })
+                print(f"Run {run_id+1} Finished | Final Cost: {best_cost:.4f} | Time: {elapsed:.2f}s | iters: {ao_iter} | nodes: {tree.tree_size}")
+                break
+
+            tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
+            tree = jax.device_put(tree)
+            tree, _ = rrtree.add_nodes(tree, init_state, jnp.zeros(sim_params.action_dims), -1, 0.0, 1)
+            
 
     # --- Calculate and Print Final Averages (With Outlier Removal) ---
     
@@ -381,10 +388,12 @@ if __name__ == "__main__":
         final_costs = [s['cost'] for s in filtered_summaries]
         final_times = [s['time'] for s in filtered_summaries]
         final_nodes = [s['nodes'] for s in filtered_summaries]
+        final_iters = [s['iters'] for s in filtered_summaries]
         
         avg_cost = np.mean(final_costs)
         avg_time = np.mean(final_times)
         avg_nodes = np.mean(final_nodes)
+        avg_iters = np.mean(final_iters)
         outliers_removed = len(valid_summaries) - len(filtered_summaries)
     else:
         avg_cost = float('inf')
@@ -403,6 +412,7 @@ if __name__ == "__main__":
     print(f"Avg Best Cost:     {avg_cost:.4f}")
     print(f"Avg Run Time:      {avg_time:.3f}s")
     print(f"Avg Tree Size:     {avg_nodes:.0f} nodes")
+    print(f"Avg Iterations:    {avg_iters:.1f} iters")
     print("="*30)
 
     # --- Data Processing & Alignment ---

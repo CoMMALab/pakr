@@ -6,6 +6,70 @@ import mujoco
 from functools import partial
 import helper
 
+def propagate_2d_integrator(states, actions, dt, constants):
+    """
+    Batched dynamics for 2D double integrator.
+    states:  (batch, 4) = [x, y, vx, vy]
+    actions: (batch, 2) = [ax, ay]
+    """
+    pos = states[:, :2]     # (batch, 2)
+    vel = states[:, 2:]     # (batch, 2)
+    
+    # Standard double integrator integration
+    new_pos = pos + vel * dt + 0.5 * actions * dt**2
+    new_vel = vel + actions * dt
+    
+    return jnp.concatenate([new_pos, new_vel], axis=-1)
+
+def propagate_unicycle(states, actions, dt, constants):
+    """
+    Batched dynamics for a Unicycle.
+    states:  (batch, 3) = [x, y, theta]
+    actions: (batch, 2) = [v, omega]
+    """
+    x, y, theta = states[:, 0], states[:, 1], states[:, 2]
+    v, omega = actions[:, 0], actions[:, 1]
+
+    # Handle the case where omega is very small to avoid division by zero
+    # using a simple Euler or RK4 integration
+    new_theta = theta + omega * dt
+    
+    # Using midpoint integration for better accuracy with rotation
+    mid_theta = theta + 0.5 * omega * dt
+    new_x = x + v * jnp.cos(mid_theta) * dt
+    new_y = y + v * jnp.sin(mid_theta) * dt
+    
+    return jnp.stack([new_x, new_y, new_theta], axis=-1)
+
+
+@jax.jit
+def propagate_unicycle_dynamic(states, actions, dt, constants):
+    """
+    Batched dynamics for a Dynamic Unicycle (Force/Acceleration control).
+    states:  (batch, 5) = [x, y, theta, v, omega]
+    actions: (batch, 2) = [accel, alpha] (linear and angular acceleration)
+    """
+    x, y, theta, v, omega = states[:, 0], states[:, 1], states[:, 2], states[:, 3], states[:, 4]
+    a, alpha = actions[:, 0], actions[:, 1]
+
+    # 1. Update velocities (Integrate accelerations)
+    new_v = v + a * dt
+    new_omega = omega + alpha * dt
+
+    # 2. Update pose (Using midpoint velocities for stability)
+    mid_v = v + 0.5 * a * dt
+    mid_omega = omega + 0.5 * alpha * dt
+    mid_theta = theta + 0.5 * mid_omega * dt
+
+    new_x = x + mid_v * jnp.cos(mid_theta) * dt
+    new_y = y + mid_v * jnp.sin(mid_theta) * dt
+    new_theta = theta + new_omega * dt
+
+    # Optionally: Add damping or friction here if needed
+    # new_v *= 0.95 
+
+    return jnp.stack([new_x, new_y, new_theta, new_v, new_omega], axis=-1)
+
 def propagate_double_integrator(states, actions, dt, constants):
     """
     Batched dynamics for 3D double integrator.
@@ -234,65 +298,109 @@ def rollout_final(state0, actions, obstacles, sst_params, sim_params, callables)
 
     return final_states, valid_mask, dist_traveled
 
-@partial(jax.jit, static_argnums=(3, 4))
-def rollout_final_mjx(
-    data0,
-    actions,
-    obstacles,
-    sst_params,
-    sim_params,
-):
+@partial(jax.jit, static_argnums=(3, 4, 5))
+def rollout_final_2d(state0, actions, obstacles, sst_params, sim_params, callables):
     """
-    MJX rollout with validity checks and distance accumulation.
-
-    Args:
-        data0    : mjx.Data (batched)
-        actions  : (batch, nu)
+    Specialized 2D rollout: Accumulated distance and validity 
+    based on the first 2 state dimensions (x, y).
     """
-
     steps = sst_params.time_to_evolve
-    model = sim_params.mjx_model
+    dt = sim_params.dt
+    prop_fn = callables.prop_fn
+    valid_fn = callables.valid_fn
 
-    # Set control once (piecewise constant)
-    data0 = data0.replace(ctrl=actions)
-
-    batch = actions.shape[0]
-
+    batch = state0.shape[0]
+    states = state0
     valid_mask = jnp.ones((batch,), dtype=jnp.bool_)
     dist_traveled = jnp.zeros((batch,), dtype=jnp.float32)
 
-    def step_fn(carry, _):
-        data, valid_mask, dist_traveled = carry
+    # Tile actions for the duration of the rollout
+    actions_seq = jnp.tile(actions[None, :, :], (steps, 1, 1))
 
-        prev_xpos = data.xpos[..., :3]  # (batch, bodies, 3)
+    def step_fn(carry, actions_t):
+        states, valid_mask, dist_traveled = carry
 
-        # Step physics
-        data = mjx.step(model, data)
+        # Propagate
+        next_states = prop_fn(states, actions_t, dt, sim_params.physics_constants)
 
-        new_xpos = data.xpos[..., :3]
-
-        # Example: track base body displacement
-        step_dist = jnp.linalg.norm(
-            new_xpos[:, 0] - prev_xpos[:, 0],
-            axis=-1
-        )
+        # 2D Euclidean distance check (hardcoded to first 2 dims)
+        step_dist = jnp.sum((next_states[..., :2] - states[..., :2]) ** 2, axis=-1) ** 0.5
 
         dist_traveled = dist_traveled + step_dist
 
         # Validity check
-        is_valid = valid_fn_mjx(data, obstacles, sim_params)
+        is_valid = valid_fn(next_states, sim_params, obstacles)
         valid_mask = valid_mask & is_valid
 
-        return (data, valid_mask, dist_traveled), None
+        return (next_states, valid_mask, dist_traveled), None
 
-    (final_data, valid_mask, dist_traveled), _ = jax.lax.scan(
+    (final_states, valid_mask, dist_traveled), _ = jax.lax.scan(
         step_fn,
-        init=(data0, valid_mask, dist_traveled),
-        xs=None,
-        length=steps,
+        init=(states, valid_mask, dist_traveled),
+        xs=actions_seq
     )
 
-    return final_data, valid_mask, dist_traveled
+    return final_states, valid_mask, dist_traveled
+
+# @partial(jax.jit, static_argnums=(3, 4))
+# def rollout_final_mjx(
+#     data0,
+#     actions,
+#     obstacles,
+#     sst_params,
+#     sim_params,
+# ):
+#     """
+#     MJX rollout with validity checks and distance accumulation.
+
+#     Args:
+#         data0    : mjx.Data (batched)
+#         actions  : (batch, nu)
+#     """
+
+#     steps = sst_params.time_to_evolve
+#     model = sim_params.mjx_model
+
+#     # Set control once (piecewise constant)
+#     data0 = data0.replace(ctrl=actions)
+
+#     batch = actions.shape[0]
+
+#     valid_mask = jnp.ones((batch,), dtype=jnp.bool_)
+#     dist_traveled = jnp.zeros((batch,), dtype=jnp.float32)
+
+#     def step_fn(carry, _):
+#         data, valid_mask, dist_traveled = carry
+
+#         prev_xpos = data.xpos[..., :3]  # (batch, bodies, 3)
+
+#         # Step physics
+#         data = mjx.step(model, data)
+
+#         new_xpos = data.xpos[..., :3]
+
+#         # Example: track base body displacement
+#         step_dist = jnp.linalg.norm(
+#             new_xpos[:, 0] - prev_xpos[:, 0],
+#             axis=-1
+#         )
+
+#         dist_traveled = dist_traveled + step_dist
+
+#         # Validity check
+#         is_valid = valid_fn_mjx(data, obstacles, sim_params)
+#         valid_mask = valid_mask & is_valid
+
+#         return (data, valid_mask, dist_traveled), None
+
+#     (final_data, valid_mask, dist_traveled), _ = jax.lax.scan(
+#         step_fn,
+#         init=(data0, valid_mask, dist_traveled),
+#         xs=None,
+#         length=steps,
+#     )
+
+#     return final_data, valid_mask, dist_traveled
 
 import jax.numpy as jnp
 

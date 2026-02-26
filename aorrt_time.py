@@ -1,0 +1,421 @@
+from functools import partial
+import jax
+import jax.numpy as jnp
+from jax import lax
+import rrtree
+import sys
+import os
+import argparse
+import propagate
+import params
+import helper
+import time
+import gc
+import numpy as np
+
+SIM_PARAMS_RESERVED = None
+CALLABLES_RESERVED = None
+
+def nn_tier_factory(size):
+    """Generates a function for lax.switch that scans a fixed slice of the tree."""
+    def nn_fn(operands):
+        states, tree_size, query = operands
+        sliced_states = states[:size]
+        
+        # Access static objects from outer scope
+        parents, _ = helper.nearest_neighbor_masked(
+            SIM_PARAMS_RESERVED, 
+            CALLABLES_RESERVED.dist_fn, 
+            sliced_states, 
+            tree_size, 
+            query
+        )
+        return parents
+    return nn_fn
+
+# Define memory buckets
+TIERS = [512, 1024, 4096, 16384, 32768, 64536, 200000]
+NN_BRANCHES = [nn_tier_factory(t) for t in TIERS]
+
+
+
+print("JAX version:", jax.__version__)
+print("Devices:", jax.devices())
+
+
+@partial(jax.jit, static_argnums=(3, 4, 5))
+def aorrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables, best_cost):
+    B = sim_params.batch_size
+    A = 128            
+    K = B // A         
+    
+    rng_key, subkey1, subkey2 = jax.random.split(rng_key, 3)
+    seed_pts = callables.sample_fn(sim_params, subkey1)[:K]
+
+    branch_idx = jnp.digitize(tree.tree_size, jnp.array(TIERS))
+    branch_idx = jnp.minimum(branch_idx, len(TIERS) - 1)
+    
+    operands = (tree.states, tree.tree_size, seed_pts)
+    parents_small = jax.lax.switch(branch_idx, NN_BRANCHES, operands) 
+
+    start_states = jnp.repeat(tree.states[parents_small], A, axis=0)
+    parents = jnp.repeat(parents_small, A, axis=0)
+    actions = callables.sampact_fn(sim_params, subkey2)
+
+    # Rollout remains necessary for validity and final state
+    states_end, valid_mask, _ = propagate.rollout_final_2d(
+        start_states, actions, obstacles, sst_params, sim_params, callables
+    )
+
+    valid_mask = valid_mask.at[-1].set(False)
+    
+    # --- TIME-BASED COST LOGIC ---
+    # Every edge has a cost of 1.0 (one rollout duration)
+    edge_cost = 1.0 
+    new_costs = tree.costs[parents] + edge_cost
+    
+    # h(n) must be in "rollouts". 
+    # Max distance per rollout = max_vel * time_to_evolve * dt
+    max_dist_per_rollout = sim_params.motion_constraints.max_vel * sst_params.time_to_evolve * sim_params.dt
+    
+    goal_vec = jnp.array([sst_params.goal.x, sst_params.goal.y])
+    dist_to_goal = jnp.linalg.norm(states_end[:, :2] - goal_vec, axis=-1)
+    h = dist_to_goal / max_dist_per_rollout
+    
+    # AO-Pruning using depth/time
+    ao_mask = (new_costs + h <= best_cost) & valid_mask
+    # -----------------------------
+
+    ao_idx = jnp.nonzero(ao_mask, size=B, fill_value=-1)[0]
+    num_new = jnp.sum(ao_mask)
+    
+    tree, start_idx = rrtree.add_nodes(
+        tree, states_end[ao_idx], actions[ao_idx], parents[ao_idx], new_costs[ao_idx], num_new
+    )
+
+    goal_mask = callables.goal_fn(states_end[ao_idx], sst_params.goal, sst_params.goal_radius)
+    return tree, rng_key, goal_mask, jnp.sum(goal_mask), states_end[ao_idx], start_idx
+
+
+
+
+@partial(jax.jit, static_argnums=(1,2,3))
+def jit_while(tree, sst_params, sim_params, callables, obstacles, best_cost, i):
+
+    def body_fn(carry):
+        tree, key, goal_mask, goal, states, start_idx, iter = carry
+
+        key, subkey = jax.random.split(key)
+
+        tree, subkey, goal_mask, goal, states, start_idx = aorrt_iteration(
+            tree,
+            subkey,
+            obstacles,
+            sst_params,
+            sim_params,
+            callables,
+            best_cost
+        )
+
+
+        return (tree, key, goal_mask, goal, states, start_idx, iter + 1)
+
+    def cond_fn(carry):
+        tree, key, goal_mask, goal, states, start_idx, iter = carry
+        # Continue while goal not reached
+        return goal == 0  # or whatever scalar stopping condition
+    init_carry = (tree, 
+                  jax.random.PRNGKey(i),
+                  jnp.zeros(sim_params.batch_size, dtype=bool),
+                  jnp.array(0, dtype=jnp.int32),
+                  jnp.zeros([sim_params.batch_size, sim_params.dims], dtype=jnp.float32),
+                  jnp.array(0, dtype=jnp.int32),
+                  jnp.array(0, dtype=jnp.int32))
+
+    tree, key, goal_mask, goal, states, start_idx, iter = jax.lax.while_loop(cond_fn, body_fn, init_carry)
+    return tree, key, goal_mask, goal, states, start_idx, iter, tree.tree_size
+
+MAX_TREE_SIZE = 70000
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Run the SST planner.')
+    parser.add_argument('--env', type=str, default='envs/tree.csv', help='Path to the environment config file.')
+    parser.add_argument('--motion', type=str, default='di', help='Define motion type: Double Integrator (di), Dubins Airplane (da), Quadcopter (qc), Mjx Cartpole (mcp)')
+    args = parser.parse_args()
+
+    match args.motion:
+        case 'di':
+            sst_params = params.sst_params_DI
+            sim_params = params.sim_params_DI
+            callables = params.Callables()
+        case 'da':
+            sst_params = params.sst_params_DA
+            sim_params = params.sim_params_DA
+            callables = params.callables_DA
+        case 'qc':
+            sst_params = params.sst_params_QC
+            sim_params = params.sim_params_QC
+            callables = params.callables_QC
+        # case 'mcp':
+        #     sst_params = params.sst_params_DI
+        #     sim_params = params.sim_params_DI
+        #     callables = params.callables_MCP
+        #     # model = mujoco.MjModel.from_xml_path(xml_path)
+        #     # mjx_model = mjx.put_model(model)
+        #     # propagate_fn = make_propagate_fn(mjx_model)
+        case _:
+            print("invalid motion type")
+            exit
+
+    
+    
+    SIM_PARAMS_RESERVED = sim_params
+    CALLABLES_RESERVED = callables
+
+    obstacles = helper.get_obs(args.env)
+    
+    # ------------------------------------------------------------
+    # AO-RRT driver (single instance, 10s anytime run)
+    # ------------------------------------------------------------
+    import matplotlib.pyplot as plt
+
+    MAX_TIME = 3.0  # seconds
+    MAX_TREE_SIZE = 100000
+
+    # ------------------------------------------------------------
+    # Tree initialization
+    # ------------------------------------------------------------
+    tree = rrtree.KinoTree.init(
+        max_size=MAX_TREE_SIZE,
+        state_dim=sim_params.dims,
+        action_dim=sim_params.action_dims
+    )
+    tree = jax.device_put(tree)
+
+    init_state = jnp.concatenate(
+        [
+            jnp.asarray(
+                [sst_params.start.x, sst_params.start.y, sst_params.start.z],
+                dtype=jnp.float32
+            ),
+            jnp.zeros(sim_params.dims - 3, dtype=jnp.float32),
+        ],
+        axis=0,
+    )
+
+    init_action = jnp.zeros(sim_params.action_dims, dtype=jnp.float32)
+    tree, _ = rrtree.add_nodes(tree, init_state, init_action, -1, 0.0, 1)
+
+    # ------------------------------------------------------------
+    # AO bookkeeping
+    # ------------------------------------------------------------
+    best_cost = jnp.inf
+    times = []
+    costs = []
+
+
+    # ------------------------------------------------------------
+    # 🔥 JIT warm-up (compile once)
+    # ------------------------------------------------------------
+    print("JIT warm-up...")
+
+    # 1. Warm up the inner iteration function directly
+    # This ensures every branch of the logic is traced.
+    _ = aorrt_iteration(
+        tree,
+        jax.random.PRNGKey(0),
+        obstacles,
+        sst_params,
+        sim_params,
+        callables,
+        jnp.inf
+    )
+
+    # 2. Warm up the while loop with a small, guaranteed execution
+    # We pass a dummy 'best_cost' and ensure it runs at least once
+    _ = jit_while(
+        tree,
+        sst_params,
+        sim_params,
+        callables,
+        obstacles,
+        jnp.array(float('inf')), 
+        0,
+    )
+
+    jax.block_until_ready(_)
+    print("Warm-up complete.")
+
+    # ------------------------------------------------------------
+    # AO-RRT anytime loop
+    # ------------------------------------------------------------
+    print("\nStarting AO-RRT...\n")
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    import seaborn as sns
+    import time
+    import jax
+    import jax.numpy as jnp
+    import gc
+
+    # --- Configuration ---
+    N_RUNS = 100
+    MAX_TIME = 3.0       
+    COST_THRESHOLD = 3
+    GT_MIN_COST = 1.48    
+    all_run_data = []
+
+    # To track the final result of each run for the global average
+    run_summaries = []
+
+    for run_id in range(N_RUNS):
+        print(f"\n--- Starting Run {run_id+1}/{N_RUNS} ---")
+        gc.collect() 
+        
+        # Initialize Tree & Root (Reset for each run)
+        tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
+        tree = jax.device_put(tree)
+        init_state = jnp.concatenate([
+            jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]), 
+            jnp.zeros(sim_params.dims - 3, dtype=jnp.float32)
+        ], axis=0)
+        tree, _ = rrtree.add_nodes(tree, init_state, jnp.zeros(sim_params.action_dims), -1, 0.0, 1)
+        
+        ao_iter = 0
+        best_cost = float('inf')
+        t0 = time.perf_counter()
+        
+        while True:
+            elapsed = time.perf_counter() - t0
+            
+            
+
+            rnd = np.random.randint(0, 2**31 - 1)
+            
+            # Call the JIT function
+            # Ensure best_cost is passed as a JAX array to prevent recompilation
+            tree, key, goal_mask, goal, states, start_idx, iters, size = jit_while(
+                tree, sst_params, sim_params, callables, obstacles,
+                jnp.array(best_cost, dtype=jnp.float32), rnd
+            )
+
+            if goal > 0:
+                idx = jnp.argmax(goal_mask)
+                sol_cost = float(tree.costs[start_idx + idx])
+                if sol_cost < best_cost:
+                    best_cost = sol_cost
+
+            all_run_data.append({
+                "Run": run_id,
+                "Iteration": ao_iter,
+                "Best Cost": best_cost if best_cost != float('inf') else None,
+                "Cumulative Time": elapsed
+            })
+            
+            ao_iter += 1
+            # Quick print for progress
+            # if ao_iter % 5 == 0: # Print every 5 iters to keep console clean
+            #     print(f"  Iter {ao_iter:02d} | Cost: {best_cost:.4f} | Nodes: {size}")
+            # Exit conditions
+            if elapsed >= MAX_TIME or best_cost <= COST_THRESHOLD:
+                # Capture the final state of this run before breaking
+                run_summaries.append({
+                    "cost": best_cost if best_cost != float('inf') else None,
+                    "time": elapsed,
+                    "nodes": int(tree.tree_size),
+                    "iters": ao_iter
+                })
+                print(f"Run {run_id+1} Finished | Final Cost: {best_cost:.4f} | Time: {elapsed:.2f}s | iters: {ao_iter} | nodes: {tree.tree_size}")
+                break
+
+            tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
+            tree = jax.device_put(tree)
+            tree, _ = rrtree.add_nodes(tree, init_state, jnp.zeros(sim_params.action_dims), -1, 0.0, 1)
+            
+
+    # --- Calculate and Print Final Averages (With Outlier Removal) ---
+    
+    # 1. Filter for valid costs first
+    valid_summaries = [s for s in run_summaries if s['cost'] is not None]
+    
+    if valid_summaries:
+        costs = np.array([s['cost'] for s in valid_summaries])
+        
+        # Calculate Mean and Std Dev
+        mean_cost = np.mean(costs)
+        std_cost = np.std(costs)
+        
+        # Define bounds (2x standard deviation)
+        lower_bound = mean_cost - 2 * std_cost
+        upper_bound = mean_cost + 2 * std_cost
+        
+        # 2. Filter out the outliers
+        filtered_summaries = [
+            s for s in valid_summaries 
+            if lower_bound <= s['cost'] <= upper_bound
+        ]
+        
+        # Calculate final stats from filtered data
+        final_costs = [s['cost'] for s in filtered_summaries]
+        final_times = [s['time'] for s in filtered_summaries]
+        final_nodes = [s['nodes'] for s in filtered_summaries]
+        final_iters = [s['iters'] for s in filtered_summaries]
+        
+        avg_cost = np.mean(final_costs)
+        avg_time = np.mean(final_times)
+        avg_nodes = np.mean(final_nodes)
+        avg_iters = np.mean(final_iters)
+        outliers_removed = len(valid_summaries) - len(filtered_summaries)
+    else:
+        avg_cost = float('inf')
+        avg_time = np.mean([s['time'] for s in run_summaries])
+        avg_nodes = np.mean([s['nodes'] for s in run_summaries])
+        outliers_removed = 0
+
+    success_rate = (len(valid_summaries) / N_RUNS) * 100
+
+    print("\n" + "="*30)
+    print("      GLOBAL STATISTICS (Filtered)")
+    print("="*30)
+    print(f"Total Runs:        {N_RUNS}")
+    print(f"Success Rate:      {success_rate:.1f}%")
+    print(f"Outliers Removed:  {outliers_removed} (outside 2σ)")
+    print(f"Avg Best Cost:     {avg_cost:.4f}")
+    print(f"Avg Run Time:      {avg_time:.3f}s")
+    print(f"Avg Tree Size:     {avg_nodes:.0f} nodes")
+    print(f"Avg Iterations:    {avg_iters:.1f} iters")
+    print("="*30)
+
+    # --- Data Processing & Alignment ---
+    df = pd.DataFrame(all_run_data)
+    max_iters_found = df['Iteration'].max()
+    full_index = pd.MultiIndex.from_product([range(N_RUNS), range(max_iters_found + 1)], names=['Run', 'Iteration'])
+    df_aligned = df.set_index(['Run', 'Iteration']).reindex(full_index)
+    df_aligned['Best Cost'] = df_aligned.groupby('Run')['Best Cost'].ffill()
+    df_aligned['Cumulative Time'] = df_aligned.groupby('Run')['Cumulative Time'].ffill()
+    df_final = df_aligned.reset_index().dropna(subset=["Best Cost"])
+
+    # --- Visualization ---
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+
+    # Graph 1: Convergence
+    sns.lineplot(data=df_final, x="Iteration", y="Best Cost", ax=ax1, color="dodgerblue", errorbar='sd', label="Mean AO-RRT Cost")
+    ax1.axhline(y=GT_MIN_COST, color='red', linestyle='--', label=f'GT Min ({GT_MIN_COST})')
+    ax1.set_title("Cost Convergence (N=5 Runs)")
+    ax1.set_ylabel("Best Cost")
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
+
+    # Graph 2: Iteration Timing
+    sns.lineplot(data=df_final, x="Iteration", y="Cumulative Time", ax=ax2, color="forestgreen", errorbar='sd')
+    ax2.set_title("Cumulative Runtime Deviation")
+    ax2.set_ylabel("Time (s)")
+    ax2.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig("aorrt_convergence.png")
+
+
+
+

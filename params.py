@@ -54,6 +54,7 @@ class Callables:
     sample_fn: callable = helper.sample_DI
     dist_fn: callable = helper.dist_DI
     sampact_fn: callable = helper.sample_actions_DI
+    goal_fn: callable = helper.reached_goal
 
 @struct.dataclass
 class Bounds:
