@@ -2,7 +2,8 @@ import jax
 from flax import struct
 import jax.numpy as jnp
 import mujoco
-#import mujoco.mjx as mjx
+import mujoco.mjx as mjx
+#from mujoco import mjx
 from queue import PriorityQueue
 import propagate
 import helper
@@ -175,12 +176,12 @@ goal_qc = Position(
 )
 
 #batch_size = 16384
-batch_size = 32768
+#batch_size = 32768
 #batch_size = 131072
 #batch_size = 65536
-#batch_size = 8192
+batch_size = 4096
 seed = 0
-time_to_evolve = 30
+time_to_evolve = 10
 # Safe params
 
 # callables_MCP = Callables(
@@ -383,6 +384,6 @@ sst_params_EEB = SSTparams(
     do_cost_to_go=False,
     do_maximal=True,
     do_set_cover=True,
-    time_to_evolve=10,
+    time_to_evolve=15,
     sparsity=0,
 )
