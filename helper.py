@@ -53,6 +53,31 @@ def collision_check(points, obstacles):
     valid_mask = ~invalid_mask
     return valid_mask
 
+@jax.jit
+def collision_check_2d(points, obstacles):
+    """
+    Batched 2D collision check: points vs axis-aligned rectangles.
+    Args:
+        points: shape (B, 2) -> [x, y]
+        obstacles: shape (O, 4) -> [x1, y1, x2, y2]
+    Returns:
+        valid_mask: shape (B,) bool, True if NOT in any obstacle
+    """
+    # Ensure coordinates are ordered: mins [x1, y1], maxs [x2, y2]
+    mins = jnp.minimum(obstacles[:, :2], obstacles[:, 2:4])
+    maxs = jnp.maximum(obstacles[:, :2], obstacles[:, 2:4])
+
+    # Broadcasting: (B, 1, 2) vs (1, O, 2)
+    points_exp = points[:, None, :]
+    mins_exp = mins[None, :, :]
+    maxs_exp = maxs[None, :, :]
+
+    # Check if points are inside [x_min, x_max] AND [y_min, y_max]
+    inside = jnp.all((points_exp >= mins_exp) & (points_exp <= maxs_exp), axis=-1)
+
+    # Point is valid if it is NOT inside any box
+    return ~jnp.any(inside, axis=-1)
+
 @partial(jax.jit, static_argnums=(1))
 def valid_DI(state, params, obstacles):
     """

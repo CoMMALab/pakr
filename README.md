@@ -54,6 +54,6 @@ It is still fast because it is manually vectorized
 
 
 docker build -t mjx .
-docker run --gpus all -it -v $(pwd):/workspace -w /workspace mjx bash
+docker run --gpus all --rm -it -v $(pwd):/workspace -w /workspace mjx bash
 
 pip install --upgrade "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html

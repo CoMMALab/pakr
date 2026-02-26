@@ -355,21 +355,54 @@ if __name__ == "__main__":
             if ao_iter % 5 == 0: # Print every 5 iters to keep console clean
                 print(f"  Iter {ao_iter:02d} | Cost: {best_cost:.4f} | Nodes: {size}")
 
-    # --- Calculate and Print Final Averages ---
-    valid_costs = [s['cost'] for s in run_summaries if s['cost'] is not None]
-    avg_cost = np.mean(valid_costs) if valid_costs else float('inf')
-    avg_time = np.mean([s['time'] for s in run_summaries])
-    avg_nodes = np.mean([s['nodes'] for s in run_summaries])
-    success_rate = (len(valid_costs) / N_RUNS) * 100
+    # --- Calculate and Print Final Averages (With Outlier Removal) ---
+    
+    # 1. Filter for valid costs first
+    valid_summaries = [s for s in run_summaries if s['cost'] is not None]
+    
+    if valid_summaries:
+        costs = np.array([s['cost'] for s in valid_summaries])
+        
+        # Calculate Mean and Std Dev
+        mean_cost = np.mean(costs)
+        std_cost = np.std(costs)
+        
+        # Define bounds (2x standard deviation)
+        lower_bound = mean_cost - 2 * std_cost
+        upper_bound = mean_cost + 2 * std_cost
+        
+        # 2. Filter out the outliers
+        filtered_summaries = [
+            s for s in valid_summaries 
+            if lower_bound <= s['cost'] <= upper_bound
+        ]
+        
+        # Calculate final stats from filtered data
+        final_costs = [s['cost'] for s in filtered_summaries]
+        final_times = [s['time'] for s in filtered_summaries]
+        final_nodes = [s['nodes'] for s in filtered_summaries]
+        
+        avg_cost = np.mean(final_costs)
+        avg_time = np.mean(final_times)
+        avg_nodes = np.mean(final_nodes)
+        outliers_removed = len(valid_summaries) - len(filtered_summaries)
+    else:
+        avg_cost = float('inf')
+        avg_time = np.mean([s['time'] for s in run_summaries])
+        avg_nodes = np.mean([s['nodes'] for s in run_summaries])
+        outliers_removed = 0
+
+    success_rate = (len(valid_summaries) / N_RUNS) * 100
 
     print("\n" + "="*30)
-    print("      GLOBAL STATISTICS")
+    print("      GLOBAL STATISTICS (Filtered)")
     print("="*30)
-    print(f"Total Runs:      {N_RUNS}")
-    print(f"Success Rate:    {success_rate:.1f}% (found any path)")
-    print(f"Avg Best Cost:   {avg_cost:.4f}")
-    print(f"Avg Run Time:    {avg_time:.3f}s")
-    print(f"Avg Tree Size:   {avg_nodes:.0f} nodes")
+    print(f"Total Runs:        {N_RUNS}")
+    print(f"Success Rate:      {success_rate:.1f}%")
+    print(f"Outliers Removed:  {outliers_removed} (outside 2σ)")
+    print(f"Avg Best Cost:     {avg_cost:.4f}")
+    print(f"Avg Run Time:      {avg_time:.3f}s")
+    print(f"Avg Tree Size:     {avg_nodes:.0f} nodes")
     print("="*30)
 
     # --- Data Processing & Alignment ---
