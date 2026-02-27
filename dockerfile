@@ -43,6 +43,7 @@ RUN pip3 install --no-cache-dir \
     chex \
     PyYAML \
     jupyterlab \
-    seaborn
+    seaborn \
+    scikit-learn \
 
 

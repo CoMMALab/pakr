@@ -291,7 +291,7 @@ if __name__ == "__main__":
     N_RUNS = 100
     MAX_TIME = 3.0       
     COST_THRESHOLD = 1.55
-    GT_MIN_COST = 1.48    
+    GT_MIN_COST = 1.403  
     all_run_data = []
 
     # To track the final result of each run for the global average
@@ -315,7 +315,6 @@ if __name__ == "__main__":
         t0 = time.perf_counter()
         
         while True:
-            elapsed = time.perf_counter() - t0
             
             
 
@@ -334,6 +333,7 @@ if __name__ == "__main__":
                 if sol_cost < best_cost:
                     best_cost = sol_cost
 
+            elapsed = time.perf_counter() - t0
             all_run_data.append({
                 "Run": run_id,
                 "Iteration": ao_iter,
@@ -442,7 +442,7 @@ if __name__ == "__main__":
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig("aorrt_convergence.png")
+    plt.savefig("ao/aorrt_convergence.png")
 
 
 

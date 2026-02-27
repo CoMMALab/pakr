@@ -51,7 +51,7 @@ def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
     - K NN queries expanded to B rollouts (B/A actions per parent).
     """
     B = sim_params.batch_size
-    A = 64  # Actions per parent
+    A = 32  # Actions per parent
     K = B // A  # Total unique parents to find
 
     rng_key, subkey1, subkey2 = jax.random.split(rng_key, 3)
@@ -181,10 +181,7 @@ if __name__ == "__main__":
         case 'frb':
             sst_params = params.sst_params_FRB
             sim_params = params.sim_params_FRB
-            b = 4096
-            sim_params.batch_size = b  # Reduce batch size for the more complex Franka model
-            sst_params.batch_size = b
-            sst_params.time_to_evolve = 5  # Increase time to evolve for longer rollouts
+
             # --- MJX model init ---
             model = mujoco.MjModel.from_xml_path("models/franka_block.xml")
             mjx_model = mjx.put_model(model)
@@ -205,6 +202,10 @@ if __name__ == "__main__":
         case 'eeb':
             sst_params = params.sst_params_EEB
             sim_params = params.sim_params_EEB
+            b = 8192
+            sim_params = sim_params.replace(batch_size=b)
+            sst_params = sst_params.replace(batch_size=b)
+            sst_params = sst_params.replace(time_to_evolve=5)
 
             # --- MJX model init ---
             model = mujoco.MjModel.from_xml_path("models/eeonly.xml")
@@ -292,82 +293,173 @@ if __name__ == "__main__":
     tree = jax.device_put(tree)
     tree, _ = rrtree.add_nodes(tree, init_state, init_controls, -1, 0.0, 1)
 
-    # ---------------------------
-    # 6. Run RRT once
-    # ---------------------------
-    print("\nRunning RRT...")
-    start_time = time.perf_counter()
+    # ------------------------------------------------------------------
+    # 3. Execution Loop & Statistics
+    # ------------------------------------------------------------------
+    times, iters, sizes, costs, best_dists = [], [], [], [], []
 
-    i = 0
-    # result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
-    # tree, key, goal_mask, goal, states, start_idx, iterations, size = jax.block_until_ready(result)
-    # print(states)
-    # path, actions = extract_sol(tree, goal_mask, start_idx)
-    # print(path, actions)
+    print(f"Starting benchmark for 100 runs...")
 
-    # elapsed = time.perf_counter() - start_time
-    # print(f"RRT finished in {elapsed*1e3:.3f} ms")
-    # print(f"Iterations: {iterations}, tree size: {size}, goal reached: {jnp.sum(goal_mask)}")
+    for i in range(40):
+        gc.collect()
 
-    best_dist = jnp.inf
-    ky = np.random.randint(0, 1e6)
-    key = jax.random.PRNGKey(ky)
-    for i in range(200):
-        key, subkey = jax.random.split(key)
+        # 1. Initialize tree with start state
+        tree = rrtree.KinoTree.init(
+            max_size=MAX_TREE_SIZE, 
+            state_dim=sim_params.dims, 
+            action_dim=sim_params.action_dims
+        )
+        
+        # Define start state: [x, y, z, 0, 0, ...]
+        init_state = jnp.zeros(sim_params.dims).at[0:3].set(
+            jnp.array([sst_params.start.x, sst_params.start.y, sst_params.start.z])
+        )
+        init_controls = jnp.zeros(sim_params.action_dims)
+        
+        # Add root node
+        tree, _ = rrtree.add_nodes(tree, init_state, init_controls, -1, 0.0, 1)
+        tree = jax.device_put(tree)
+
+        # 2. Run Solver (Full RRT via jit_while)
         start_p = time.perf_counter()
-        tree, key, goal_mask, goal_count, states, start_idx = rrt_iteration(
-            tree,
-            subkey,
-            obstacles,
-            sst_params,
-            sim_params,
-            callables,
-        )
-
-        # Force execution (important for timing + debugging)
-        goal_mask = goal_mask.block_until_ready()
-        states = states.block_until_ready()
+        
+        result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
+        # Unpack result (ensuring JAX completes execution before we stop the clock)
+        tree, key, goal_mask, goal_count, states, start_idx, iter_val, size = jax.block_until_ready(result)
+        
         timer = time.perf_counter() - start_p
-        #print(states)
-        # --------------------------------------------------
-        # Distance-to-goal tracking
-        # --------------------------------------------------
-        # assumes goal is on block xyz
-        tree_states = tree.states[:tree.tree_size - 1, :]
-        #print(tree_states)
-        block_xyz = tree_states[:, 4:7]  # adjust if your indexing differs
-        goal_xyz = jnp.array([
-            sst_params.goal.x,
-            sst_params.goal.y,
-            sst_params.goal.z,
-        ])
 
-        dists = jnp.linalg.norm(block_xyz - goal_xyz, axis=1)
-        iter_best = jnp.min(dists)
+        # 3. Distance-to-goal tracking (Best distance achieved in this run)
+        # Assumes block xyz is at indices 4:7 based on your previous snippet
+        # If your state vector changed, adjust the slice [:, 4:7] accordingly
+        valid_states = tree.states[:int(size), 4:7]
+        goal_xyz = jnp.array([sst_params.goal.x, sst_params.goal.y, sst_params.goal.z])
+        run_best_dist = jnp.min(jnp.linalg.norm(valid_states - goal_xyz, axis=1))
 
-        if iter_best < best_dist:
-            best_iter = i
+        # 4. Calculate cost if goal reached
+        # If no goal reached, cost is usually inf or the best available node
+        has_goal = jnp.any(goal_mask)
+        if has_goal:
+            # Get cost of the first state that satisfied the goal
+            goal_idx = jnp.argmax(goal_mask)
+            cost = tree.costs[goal_idx]
+        else:
+            cost = jnp.nan # Or run_best_dist depending on how you want to log failures
 
-        best_dist = iter_best
-        print(
-            f"[iter {i:03d}] "
-            f"tree_size={int(tree.tree_size)} | "
-            f"new_goal={int(jnp.sum(goal_mask))} | "
-            f"best_dist={float(best_dist):.4f} | "
-            f"iter_time={timer*1e3:.2f} ms"
-        )
+        # Store stats
+        if i > 0 and tree.tree_size < 250000:
+            times.append(timer)
+            iters.append(iter_val)
+            sizes.append(size)
+            costs.append(cost)
+            best_dists.append(run_best_dist)
 
-        # --------------------------------------------------
-        # Early exit if goal reached
-        # --------------------------------------------------
-        if jnp.any(goal_mask):
-            print(f"\n🎯 Goal reached at iteration {i}")
-            path, actions = extract_sol(tree, goal_mask, start_idx)
-            print(path)
-            print(actions)
-            np.save("solution_actions.npy", np.array(actions))
-            np.save("solution_states.npy", np.array(path))
-            break
+        print(f"[Run {i:02d}] Goal: {bool(has_goal)} | Dist: {run_best_dist:.4f} | "
+            f"Iters: {iter_val} | Time: {timer*1e3:.2f} ms | nodes: {tree.tree_size}")
+
+    # ------------------------------------------------------------------
+    # 4. Final Statistics Logic
+    # ------------------------------------------------------------------
+    times = jnp.array(times)
+    iters = jnp.array(iters)
+    sizes = jnp.array(sizes)
+    costs = jnp.array(costs, dtype=jnp.float32)
+    best_dists = jnp.array(best_dists)
+
+    success_rate = jnp.mean(~jnp.isnan(costs)) * 100
+
+    print("\n" + "="*30)
+    print(f"BENCHMARK RESULTS ({len(times)} runs)")
+    print("="*30)
+    print(f"Success Rate:    {success_rate:.1f}%")
+    print(f"Average Time:    {jnp.mean(times)*1e3:.3f} ms (±{jnp.std(times)*1e3:.3f})")
+    print(f"Min/Max Time:    {jnp.min(times)*1e3:.3f} / {jnp.max(times)*1e3:.3f} ms")
+    print(f"Average Iters:   {jnp.mean(iters):.2f}")
+    print(f"Average Size:    {jnp.mean(sizes):.2f}")
+    print(f"Average Distance: {jnp.mean(best_dists):.4f}")
+
+    # Filter out NaNs for cost averages
+    valid_costs = costs[~jnp.isnan(costs)]
+    if len(valid_costs) > 0:
+        print(f"Average Cost:    {jnp.mean(valid_costs):.3f}")
+    else:
+        print("Average Cost:    N/A (No goals reached)")
+    # # ---------------------------
+    # # 6. Run RRT once
+    # # ---------------------------
+    # print("\nRunning RRT...")
+    # start_time = time.perf_counter()
+
+    # i = 0
+    # # result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
+    # # tree, key, goal_mask, goal, states, start_idx, iterations, size = jax.block_until_ready(result)
+    # # print(states)
+    # # path, actions = extract_sol(tree, goal_mask, start_idx)
+    # # print(path, actions)
+
+    # # elapsed = time.perf_counter() - start_time
+    # # print(f"RRT finished in {elapsed*1e3:.3f} ms")
+    # # print(f"Iterations: {iterations}, tree size: {size}, goal reached: {jnp.sum(goal_mask)}")
+
+    # best_dist = jnp.inf
+    # ky = np.random.randint(0, 1e6)
+    # key = jax.random.PRNGKey(ky)
+    # for i in range(200):
+    #     key, subkey = jax.random.split(key)
+    #     start_p = time.perf_counter()
+    #     tree, key, goal_mask, goal_count, states, start_idx = rrt_iteration(
+    #         tree,
+    #         subkey,
+    #         obstacles,
+    #         sst_params,
+    #         sim_params,
+    #         callables,
+    #     )
+
+    #     # Force execution (important for timing + debugging)
+    #     goal_mask = goal_mask.block_until_ready()
+    #     states = states.block_until_ready()
+    #     timer = time.perf_counter() - start_p
+    #     #print(states)
+    #     # --------------------------------------------------
+    #     # Distance-to-goal tracking
+    #     # --------------------------------------------------
+    #     # assumes goal is on block xyz
+    #     tree_states = tree.states[:tree.tree_size - 1, :]
+    #     #print(tree_states)
+    #     block_xyz = tree_states[:, 4:7]  # adjust if your indexing differs
+    #     goal_xyz = jnp.array([
+    #         sst_params.goal.x,
+    #         sst_params.goal.y,
+    #         sst_params.goal.z,
+    #     ])
+
+    #     dists = jnp.linalg.norm(block_xyz - goal_xyz, axis=1)
+    #     iter_best = jnp.min(dists)
+
+    #     if iter_best < best_dist:
+    #         best_iter = i
+
+    #     best_dist = iter_best
+    #     print(
+    #         f"[iter {i:03d}] "
+    #         f"tree_size={int(tree.tree_size)} | "
+    #         f"new_goal={int(jnp.sum(goal_mask))} | "
+    #         f"best_dist={float(best_dist):.4f} | "
+    #         f"iter_time={timer*1e3:.2f} ms"
+    #     )
+
+    #     # --------------------------------------------------
+    #     # Early exit if goal reached
+    #     # --------------------------------------------------
+    #     if jnp.any(goal_mask):
+    #         print(f"\n🎯 Goal reached at iteration {i}")
+    #         path, actions = extract_sol(tree, goal_mask, start_idx)
+    #         print(path)
+    #         print(actions)
+    #         np.save("solution_actions.npy", np.array(actions))
+    #         np.save("solution_states.npy", np.array(path))
+    #         break
 
 
 

@@ -12,6 +12,8 @@ import helper
 import time
 import gc
 import numpy as np
+import pandas as pd
+import seaborn as sns
 
 import jax
 from jax import random
@@ -329,7 +331,7 @@ if __name__ == "__main__":
     obstacles = helper.get_obs(args.env)
 
     MAX_TIME, MAX_TREE_SIZE = 3.0, 100000
-    N_RUNS, COST_THRESHOLD, GT_MIN_COST = 10, 1.55, 1.48
+    N_RUNS, COST_THRESHOLD, GT_MIN_COST = 10, 1.55, 1.403
     all_run_data, run_summaries = [], []
 
     # --- JIT Warmup Prep ---
@@ -341,8 +343,11 @@ if __name__ == "__main__":
     ])
     temp_tree, _ = rrtree.add_nodes(temp_tree, init_state, jnp.zeros(sim_params.action_dims), -1, 0.0, 1)
     
-    # Initialize an empty GMM for warmup (Identity covariance, zero mean)
-    gmm_params = {"mu": jnp.zeros((10, sim_params.dims)), "sigma": jnp.tile(jnp.eye(sim_params.dims), (10, 1, 1)), "pi": jnp.ones(10)/10}
+    gmm_params = GMMParams(
+        weights=jnp.ones(10) / 10,
+        means=jnp.zeros((10, sim_params.dims)),
+        covs=jnp.ones((10, sim_params.dims))  # Assuming diagonal covariance based on your fit_gmm logic
+    )
     
     print("JIT warm-up (Priming Switch Branches and Multi-Action Logic)...")
     _ = jit_while(temp_tree, sst_params, sim_params, callables, obstacles, jnp.inf, 0, gmm_params, 0.0)
@@ -387,16 +392,16 @@ if __name__ == "__main__":
                 "Cumulative Time": elapsed
             })
 
-            # Update GMM based on the new expansion
-            X_update, _ = extract_gmm_training_data(tree, states, goal_mask, start_idx)
-            gmm_params = fit_gmm_from_data(X_update, K=10)
+            # # Update GMM based on the new expansion
+            # X_update, _ = extract_gmm_training_data(tree, states, goal_mask, start_idx)
+            # gmm_params = fit_gmm_from_data(X_update, K=10)
             
-            # Gradually increase GMM influence as the tree grows
-            p_gmm = min(0.7, p_gmm + 0.05) 
+            # # Gradually increase GMM influence as the tree grows
+            # p_gmm = min(0.7, p_gmm + 0.05) 
+            p_gmm = 0
             
             ao_iter += 1
-            if ao_iter % 5 == 0:
-                print(f"  Iter {ao_iter:02d} | Time: {elapsed:5.2f}s | Best Cost: {best_cost:.4f} | Nodes: {size}")
+            print(f"  Iter {ao_iter:02d} | Time: {elapsed:5.2f}s | Best Cost: {best_cost:.4f} | Nodes: {size}")
 
     # --- Final Statistics ---
     valid_costs = [s['cost'] for s in run_summaries if s['cost'] != float('inf')]
@@ -439,7 +444,7 @@ if __name__ == "__main__":
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.show()
+    plt.savefig("ao/aogmm_convergence.png")
 
 
 
