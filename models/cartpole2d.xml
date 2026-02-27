@@ -25,7 +25,7 @@
       <geom name="cart" type="box" size="0.2 0.1 0.1" mass="1.0"/>
       
       <body name="pole" pos="0 0 0">
-        <joint name="hinge" type="hinge" axis="0 1 0" pos="0 0 0" range="-1 1"/>
+        <joint name="hinge" type="hinge" axis="0 1 0" pos="0 0 0"/>
         <geom name="pole" type="capsule" size="0.02 0.6" pos="0 0 0.6" mass="0.1"/>
       </body>
     </body>

@@ -51,7 +51,7 @@ def generate_and_visualize_env(num_obstacles=40, size=0.05, filename='envs/tree2
     ax.grid(True, linestyle='--', alpha=0.6)
     ax.legend()
     
-    plt.savefig('envs/env_visual.png')
+    plt.savefig('envs/vis/tree2d.png')
 
 if __name__ == "__main__":
     if not os.path.exists('envs'): 

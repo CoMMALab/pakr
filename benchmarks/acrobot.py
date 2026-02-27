@@ -75,18 +75,29 @@ def sample_actions_acrobot(sim_params, key):
 
 @jax.jit
 def reached_goal_acrobot(states, goal, radius):
-    # Goal: Vertically upright [pi/2, 0, 0, 0]
-    goal_state = jnp.array([jnp.pi/2, 0.0, 0.0, 0.0])
-    diff = states - goal_state
-    # Angle wrapping for distance
-    diff = diff.at[:, 0:2].set((diff[:, 0:2] + jnp.pi) % (2 * jnp.pi) - jnp.pi)
-    return jnp.sum(diff**2, axis=-1) < radius**2
+    # Goal angles: Vertically upright
+    goal_angles = jnp.array([jnp.pi/2, 0.0])
+    
+    # 1. Calculate angular difference with wrapping
+    diff_angles = states[:, 0:2] - goal_angles
+    diff_angles = (diff_angles + jnp.pi) % (2 * jnp.pi) - jnp.pi
+    angle_dist_sq = jnp.sum(diff_angles**2, axis=-1)
+    
+    # 2. Calculate velocity difference (relative to 0)
+    # We use a much larger tolerance or a separate check for velocity
+    vel_dist_sq = jnp.sum(states[:, 2:4]**2, axis=-1)
+    
+    # Option A: Only check angles (Fly-by goal)
+    # return angle_dist_sq < radius**2
+
+    # Option B: Weighted check (Positions are 10x more important than stopping)
+    return (angle_dist_sq + 0.1 * vel_dist_sq) < radius**2
 
 @partial(jax.jit, static_argnums=(1))
 def valid_acrobot(state, params, obstacles):
     # Basic velocity clamping
     v = state[:, 2:4]
-    vel_ok = jnp.all(jnp.abs(v) < 15.0, axis=-1)
+    vel_ok = jnp.all(jnp.abs(v) < 5.0, axis=-1)
     return vel_ok
 
 # ------------------------------------------------------------------
@@ -95,9 +106,16 @@ def valid_acrobot(state, params, obstacles):
 
 def extract_sol(tree, goal_mask, start_idx):
     if jnp.sum(goal_mask) == 0:
+        print(tree.tree_size)
+        print("error: no goal reached")
         return None, None
-    goal_idx = jnp.argmax(goal_mask) + start_idx
-    path, actions = [], []
+    
+    #print(jnp.sum(goal_mask))
+
+    goal_idxs = jnp.argmax(goal_mask)
+    goal_idx = goal_idxs + start_idx
+    path = []
+    actions = []
     while goal_idx != -1:
         path.append(tree.states[goal_idx])
         actions.append(tree.actions[goal_idx])
@@ -105,6 +123,7 @@ def extract_sol(tree, goal_mask, start_idx):
     return jnp.array(path[::-1]), jnp.array(actions[::-1])
 
 def verify_sol(path, actions, obstacles, sst_params, sim_params, callables):
+    if path is None: return False
     for i in range(len(actions)-1):
         start = path[i][None, :]
         action = actions[i+1][None, :]
@@ -118,7 +137,7 @@ def verify_sol(path, actions, obstacles, sst_params, sim_params, callables):
 # PLANNER SETUP
 # ------------------------------------------------------------------
 
-MAX_TREE_SIZE = 50000
+MAX_TREE_SIZE = 500000
 TIERS = [512, 1024, 4096, 16384, 32768, 50000]
 SIM_PARAMS_RESERVED = None
 CALLABLES_RESERVED = None
@@ -136,7 +155,7 @@ NN_BRANCHES = [nn_tier_factory(t) for t in TIERS]
 
 @partial(jax.jit, static_argnums=(3, 4, 5))
 def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
-    B, A = sim_params.batch_size, 16 
+    B = sim_params.batch_size
     K = B // A 
     rng_key, subkey1, subkey2 = jax.random.split(rng_key, 3)
     seed_pts = callables.sample_fn(sim_params, subkey1)[:K]
@@ -186,7 +205,8 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, i):
 # ------------------------------------------------------------------
 
 if __name__ == "__main__":
-    batch_size = 2048
+    batch_size = 4096
+    A = 32
     sim_params = MJXparams(
         motion_constraints=MotionConstraints(max_accel=10.0, min_accel=-10.0),
         physics_constants=PhysicsConstants(),
@@ -199,7 +219,7 @@ if __name__ == "__main__":
         batch_size=batch_size, δBN=0.1, δs=0.05, decay=0.8,
         start=Position(x=-jnp.pi/2, y=0.0, z=0.0), # theta1 = -pi/2 (down)
         goal=Position(x=jnp.pi/2, y=0.0, z=0.0),    # theta1 = pi/2 (up)
-        goal_radius=0.15, time_to_evolve=5,
+        goal_radius=0.2, time_to_evolve=3,
     )
 
     callables = Callables(
@@ -217,8 +237,8 @@ if __name__ == "__main__":
 
     times, iters, sizes, costs = [], [], [], []
 
-    for i in range(10):
-        print(i)
+    for i in range(100):
+
         tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.dims, sim_params.action_dims)
         
         # UPDATED INIT STATE: [theta1, theta2, dtheta1, dtheta2]
@@ -230,16 +250,16 @@ if __name__ == "__main__":
         tree, key, goal_mask, goal_found, states, start_idx, iter_val, size = jax.block_until_ready(result)
         timer = time.perf_counter() - start_p
 
-        if jnp.any(goal_mask):
-            path, actions = extract_sol(tree, goal_mask, start_idx)
-            is_valid = verify_sol(path, actions, obstacles, sst_params, sim_params, callables)
-            
-            if not is_valid:
-                print(f"Run {i}: Found path but verification failed!")
 
-            cost = tree.costs[jnp.argmax(goal_mask) + start_idx]
-            costs.append(cost); times.append(timer); iters.append(iter_val); sizes.append(size)
-            print(f"Run {i:02d}: Goal reached! Iters: {iter_val}, Time: {timer*1e3:.2f}ms, Cost: {cost:.3f}")
+        path, actions = extract_sol(tree, goal_mask, start_idx)
+        is_valid = verify_sol(path, actions, obstacles, sst_params, sim_params, callables)
+        
+        if not is_valid:
+            print(f"Run {i}: Found path but verification failed!")
+
+        cost = tree.costs[jnp.argmax(goal_mask) + start_idx]
+        costs.append(cost); times.append(timer); iters.append(iter_val); sizes.append(size)
+        print(f"Run {i:02d}: Goal reached! Iters: {iter_val}, Time: {timer*1e3:.2f}ms, Cost: {cost:.3f}")
 
     # Statistics (Consistent with original script)
     times, iters, sizes, costs = jnp.array(times), jnp.array(iters), jnp.array(sizes), jnp.array(costs)

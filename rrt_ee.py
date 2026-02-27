@@ -14,8 +14,94 @@ import gc
 import numpy as np
 import mujoco
 import mujoco.mjx as mjx
-from franka_prop import make_ball_block_propagate_fn, make_franka_propagate_fn
 from rrtsolcheck import extract_sol, verify_sol
+
+def make_ball_block_propagate_fn(mjx_model):
+    """
+    Batched MJX propagation for:
+      - 2D force-controlled ball
+      - 2D block with rotation (nonprehensile)
+    """
+
+    @partial(jax.jit, static_argnums=(0,))
+    def propagate_batch(num_steps, states, actions):
+        """
+        states: (batch, 10)
+          [ ball_x, ball_y,
+            ball_dx, ball_dy,
+            block_x, block_y, block_theta,
+            block_dx, block_dy, block_dtheta ]
+
+        actions: (batch, 2)
+          [ Fx, Fy ]
+        """
+
+        # -------------------------
+        # Split state
+        # -------------------------
+        ball_xy     = states[:, 0:2]
+        ball_dxy    = states[:, 2:4]
+
+        block_xyth  = states[:, 4:7]
+        block_dxyth = states[:, 7:10]
+
+        # -------------------------
+        # Assemble qpos / qvel
+        # MJX model layout:
+        # qpos = [ ball_x, ball_y, block_x, block_y, block_theta ]
+        # qvel = [ ball_dx, ball_dy, block_dx, block_dy, block_dtheta ]
+        # -------------------------
+        qpos = jnp.concatenate(
+            [ball_xy, block_xyth], axis=-1
+        )  # (batch, 5)
+
+        qvel = jnp.concatenate(
+            [ball_dxy, block_dxyth], axis=-1
+        )  # (batch, 5)
+
+        # -------------------------
+        # MJX data creation
+        # -------------------------
+        template = mjx.make_data(mjx_model)
+
+        def _make_data(qp, qv, u):
+            return template.replace(
+                qpos=qp,
+                qvel=qv,
+                ctrl=u,
+            )
+
+        data_batch = jax.vmap(_make_data)(qpos, qvel, actions)
+
+        # -------------------------
+        # MJX stepping (batched)
+        # -------------------------
+        vmapped_step = jax.vmap(mjx.step, in_axes=(None, 0))
+
+        def step_fn(_, data):
+            return vmapped_step(mjx_model, data)
+
+        final_data = jax.lax.fori_loop(
+            0, num_steps, step_fn, data_batch
+        )
+
+        # -------------------------
+        # Extract final state
+        # -------------------------
+        final_states = jnp.concatenate(
+            [
+                final_data.qpos[:, 0:2],   # ball x,y
+                final_data.qvel[:, 0:2],   # ball dx,dy
+                final_data.qpos[:, 2:5],   # block x,y,theta
+                final_data.qvel[:, 2:5],   # block dx,dy,dtheta
+            ],
+            axis=-1,
+        )
+
+        return final_states
+
+    return propagate_batch
+
 
 # Global references to allow the switch branches to access static objects via closure
 SIM_PARAMS_RESERVED = None
@@ -39,7 +125,7 @@ def nn_tier_factory(size):
     return nn_fn
 
 # Define memory buckets
-TIERS = [512, 1024, 4096, 16384, 32768, 250000]
+TIERS = [512, 1024, 4096, 16384, 32768, 64536, 131072, 262144, 524288, 1048576]
 NN_BRANCHES = [nn_tier_factory(t) for t in TIERS]
 
 
@@ -151,7 +237,7 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, i):
     tree, key, goal_mask, goal, states, start_idx, iter = jax.lax.while_loop(cond_fn, body_fn, init_carry)
     return tree, key, goal_mask, goal, states, start_idx, iter, tree.tree_size
 
-MAX_TREE_SIZE = 250000
+MAX_TREE_SIZE = 1_000_000
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
     parser.add_argument('--env', type=str, default='envs/tree.csv', help='Path to the environment config file.')

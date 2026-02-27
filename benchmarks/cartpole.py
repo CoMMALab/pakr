@@ -16,19 +16,39 @@ from params import MJXparams, SSTparams, Callables, MotionConstraints, PhysicsCo
 # ------------------------------------------------------------------
 # CARTPOLE SPECIFIC HELPERS
 # ------------------------------------------------------------------
+@jax.jit
+def valid_cartpole(states, sim_params):
+    """
+    Checks if states are within physical and safety boundaries.
+    states: [batch, 4] -> [x, theta, v, omega]
+    """
+    # Extract columns
+    x = states[:, 0]
+    theta = states[:, 1]
+    v = states[:, 2]
+    omega = states[:, 3]
+    x_valid = (x > sim_params.bounds.min_x) & (x < sim_params.bounds.max_x)
+
+    v_valid = (v > sim_params.motion_constraints.min_vel) & \
+              (v < sim_params.motion_constraints.max_vel)
+
+    theta_valid = jnp.ones_like(x, dtype=bool)
+
+    # Combine all checks
+    return x_valid & v_valid & theta_valid
 
 @jax.jit
 def dist_cartpole(sim_params, diff):
     # diff: [d_cart_x, d_pole_theta, d_cart_v, d_pole_v]
     # Weights prioritize pole angle and cart position
     weights = jnp.array([1.0, 5.0, 0.1, 0.1])
-    return jnp.sum(weights * (diff**2), axis=-1)
+    return jnp.sum(weights * (diff**2), axis=-1).T
 
 @jax.jit
-def reached_goal_cartpole(states, goal_state, radius):
+def reached_goal_cartpole(states, goal, radius):
     # Check cart position and pole angle
     # state: [x, theta, v, omega]
-    diff = states[:, :2] - goal_state[:2]
+    diff = (states[:, jnp.array([0, 1, 3])] - jnp.array([goal.x, goal.y, goal.z])) * jnp.array([1.0, 0.5, 0.1])
     dist = jnp.sqrt(jnp.sum(diff**2, axis=-1))
     return dist < radius
 
@@ -38,10 +58,11 @@ def sample_cartpole(sim_params, key):
     k1, k2 = jax.random.split(key)
     # Range: x [-2.4, 2.4], theta [-0.2, 0.2] for stability
     pos = jax.random.uniform(k1, (sim_params.batch_size, 2), 
-                             minval=jnp.array([-2.4, -0.2]), 
-                             maxval=jnp.array([2.4, 0.2]))
+                             minval=jnp.array([sim_params.bounds.min_x, -jnp.pi]), 
+                             maxval=jnp.array([sim_params.bounds.max_x, jnp.pi]))
     vel = jax.random.uniform(k2, (sim_params.batch_size, 2), 
-                             minval=-1.0, maxval=1.0)
+                             minval=jnp.array([sim_params.motion_constraints.min_vel, -1.0]), 
+                             maxval=jnp.array([sim_params.motion_constraints.max_vel, 1.0]))
     return jnp.concatenate([pos, vel], axis=-1)
 
 @partial(jax.jit, static_argnums=(0,))
@@ -54,36 +75,63 @@ def sample_actions_cartpole(sim_params, key):
 # ------------------------------------------------------------------
 
 def make_cartpole_propagate(mjx_model):
-    @jax.jit
-    def prop_fn(start_states, actions, obstacles, sst_params, sim_params):
-        # start_states: (B, 4) -> [q, dq]
-        def integration_step(carry, unused):
-            d, ctrl = carry
-            # Set state and control
-            d = d.replace(qpos=d.qpos.at[:].set(d.qpos), qvel=d.qvel.at[:].set(d.qvel))
-            d = d.replace(ctrl=ctrl)
-            d = mjx.step(mjx_model, d)
-            return (d, ctrl), None
+    @partial(jax.jit, static_argnums=(0,))
+    def propagate_batch(num_steps, states, actions):
+        nq = mjx_model.nq
+        nv = mjx_model.nv
+        
+        qpos = states[:, :nq]
+        qvel = states[:, nq : nq + nv]
 
-        # Vectorized rollout using vmap
-        def single_rollout(s, u):
-            data = mjx.make_data(mjx_model)
-            # Cartpole qpos: [x, theta], qvel: [v, omega]
-            data = data.replace(qpos=s[:2], qvel=s[2:])
-            
-            # Sub-stepping for 'time_to_evolve'
-            steps = int(sst_params.time_to_evolve)
-            (data_final, _), _ = jax.lax.scan(integration_step, (data, u), None, length=steps)
-            
-            state_end = jnp.concatenate([data_final.qpos, data_final.qvel])
-            # Simple boundary check for valid mask
-            is_valid = (jnp.abs(state_end[0]) < 4.8) & (jnp.abs(state_end[1]) < 1.0)
-            dist = jnp.linalg.norm(state_end[:2] - s[:2])
-            return state_end, is_valid, dist
+        template = mjx.make_data(mjx_model)
 
-        return jax.vmap(single_rollout)(start_states, actions)
-    return prop_fn
+        def _make_data(qp, qv, u):
+            return template.replace(
+                qpos=qp,
+                qvel=qv,
+                ctrl=u,
+            )
 
+        # Vectorize the data creation
+        data_batch = jax.vmap(_make_data)(qpos, qvel, actions)
+        vmapped_step = jax.vmap(mjx.step, in_axes=(None, 0))
+
+        def step_fn(_, data):
+            return vmapped_step(mjx_model, data)
+
+        final_data = jax.lax.fori_loop(0, num_steps, step_fn, data_batch)
+        final_states = jnp.concatenate([final_data.qpos, final_data.qvel], axis=-1)
+        return final_states
+
+    return propagate_batch
+
+def make_cartpole_rollout(prop_fn):
+    """
+    Adapter: makes MJX propagate_batch look like rollout_final.
+    """
+
+    def rollout_final_cartpole(state0, actions, obstacles, sst_params, sim_params):
+        """
+        state0:   (batch, 27)
+        actions:  (batch, 7)
+        returns:
+            final_states: (batch, 27)
+            valid_mask:  (batch,)  -> all True
+            cost:        (batch,)  -> zeros
+        """
+        batch = state0.shape[0]
+        final_states = prop_fn(
+            sst_params.time_to_evolve,
+            state0,
+            actions,
+        )
+
+        valid_mask = valid_cartpole(final_states, sim_params)
+        cost = jnp.zeros((batch,), dtype=jnp.float32)
+
+        return final_states, valid_mask, cost
+
+    return rollout_final_cartpole
 # ------------------------------------------------------------------
 # RRT INFRASTRUCTURE
 # ------------------------------------------------------------------
@@ -107,7 +155,6 @@ NN_BRANCHES = [nn_tier_factory(t) for t in TIERS]
 @partial(jax.jit, static_argnums=(3, 4, 5))
 def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
     B = sim_params.batch_size
-    A = 16 
     K = B // A 
 
     rng_key, sk1, sk2 = jax.random.split(rng_key, 3)
@@ -133,7 +180,7 @@ def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
     new_costs = tree.costs[parents[valid_idx]] + dist_traveled[valid_idx]
 
     tree, start_idx = rrtree.add_nodes(tree, new_states, actions[valid_idx], parents[valid_idx], new_costs, num_new)
-    goal_mask = callables.goal_fn(new_states, sst_params.goal_vec, sst_params.goal_radius)
+    goal_mask = callables.goal_fn(new_states, sst_params.goal, sst_params.goal_radius)
 
     return tree, rng_key, goal_mask, jnp.sum(goal_mask), new_states, start_idx
 
@@ -166,13 +213,16 @@ MAX_TREE_SIZE = 128000
 if __name__ == "__main__":
     # --- MuJoCo Setup ---
     # Load the XML string provided in the prompt or from file
-    model = mujoco.MjModel.from_xml_path("cartpole.xml") 
+    model = mujoco.MjModel.from_xml_path("models/cartpole2d.xml") 
     mjx_model = mjx.put_model(model)
     
+    b = 4096
+    A = 32
+
     sim_params = MJXparams(
         motion_constraints=MotionConstraints(max_vel=2.0, min_vel=-2.0, max_accel=10.0, min_accel=-10.0),
         physics_constants=PhysicsConstants(),
-        batch_size=4096,
+        batch_size=b,
         bounds=Bounds(min_x=-4.8, max_x=4.8, min_y=-1.0, max_y=1.0),
         dims=4,         # [x, theta, v, omega]
         action_dims=1,  # [force]
@@ -180,17 +230,17 @@ if __name__ == "__main__":
     )
 
     sst_params = SSTparams(
-        batch_size=4096,
-        goal=Position(x=0.0, y=0.0, z=0.0), # y is theta here
-        goal_radius=0.1,
-        time_to_evolve=5 # 5 MJX steps per edge
+        batch_size=b, δBN=0.1, δs=0.05, decay=0.8,
+        start=Position(x=1.0, y=-jnp.pi, z=0.0), # y is theta here
+        goal=Position(x=0.0, y=jnp.pi, z=0.0), # y is theta here
+        goal_radius=0.4,
+        time_to_evolve=10 # 5 MJX steps per edge
     )
-    # Helper to treat goal as a vector for JIT
-    sst_params.goal_vec = jnp.array([0.0, 0.0, 0.0, 0.0]) 
 
+    prop = make_cartpole_propagate(mjx_model)
     callables = Callables(
-        prop_fn=make_cartpole_propagate(mjx_model),
-        valid_fn=None, # Handled inside prop_fn for MJX
+        prop_fn=make_cartpole_rollout(prop),
+        valid_fn=valid_cartpole,
         sample_fn=sample_cartpole,
         dist_fn=dist_cartpole,
         sampact_fn=sample_actions_cartpole,
@@ -208,16 +258,23 @@ if __name__ == "__main__":
     tree, _ = rrtree.add_nodes(tree, init_state, jnp.zeros(1), -1, 0.0, 1)
     _ = jit_while(tree, sst_params, sim_params, callables, obstacles, 0)
     print("Compilation Complete.")
-
+    times, iters, sizes = [], [], []
     # --- Run Loop ---
-    for i in range(10):
+    for i in range(100):
         gc.collect()
         tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.dims, sim_params.action_dims)
         tree, _ = rrtree.add_nodes(tree, init_state, jnp.zeros(1), -1, 0.0, 1)
         
         start_t = time.perf_counter()
         res = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
-        tree, _, goal_mask, count, _, start_idx, iters = jax.block_until_ready(res)
+        tree, _, goal_mask, count, _, start_idx, iter_num = jax.block_until_ready(res)
         duration = time.perf_counter() - start_t
+
+        times.append(duration); iters.append(iter_num); sizes.append(tree.tree_size)
         
-        print(f"Run {i} | Goal: {count > 0} | Iters: {iters} | Time: {duration:.3f}s | Nodes: {tree.tree_size}")
+        print(f"Run {i} | Goal: {count > 0} | Iters: {iter_num} | Time: {duration:.3f}s | Nodes: {tree.tree_size}")
+
+    # Statistics (Consistent with original script)
+    times, iters, sizes = jnp.array(times), jnp.array(iters), jnp.array(sizes)
+    print(f"\nAverage time over {len(times)} runs: {jnp.mean(times)*1e3:.3f} ms, {jnp.mean(iters):.2f} iterations, size {jnp.mean(sizes):.2f}")
+    print(f"min time: {jnp.min(times)*1e3:.3f} ms, max time: {jnp.max(times)*1e3:.3f} ms")

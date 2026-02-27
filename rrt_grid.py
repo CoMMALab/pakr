@@ -39,7 +39,7 @@ def nn_tier_factory(size):
     return nn_fn
 
 # Define memory buckets
-TIERS = [512, 1024, 4096, 16384, 32768, 64536, 200000]
+TIERS = [512, 1024, 4096, 16384, 32768, 64536, 131_072, 262_144, 500_000]
 NN_BRANCHES = [nn_tier_factory(t) for t in TIERS]
 
 
@@ -52,7 +52,6 @@ def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
     """One batched kinodynamic RRT iteration with reduced NN calls (B/64 parents × 64 actions)."""
 
     B = sim_params.batch_size
-    A = 128
     K = B // A  # number of NN queries
 
     rng_key, subkey1, subkey2 = jax.random.split(rng_key, 3)
@@ -153,12 +152,44 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, i):
     tree, key, goal_mask, goal, states, start_idx, iter = jax.lax.while_loop(cond_fn, body_fn, init_carry)
     return tree, key, goal_mask, goal, states, start_idx, iter, tree.tree_size
 
-MAX_TREE_SIZE = 100000
+def extract_sol(tree, goal_mask, start_idx):
+    if jnp.sum(goal_mask) == 0:
+        print(tree.tree_size)
+        print("error: no goal reached")
+        return None, None
+    
+    #print(jnp.sum(goal_mask))
 
+    goal_idxs = jnp.argmax(goal_mask)
+    goal_idx = goal_idxs + start_idx
+    path = []
+    actions = []
+    while goal_idx != -1:
+        path.append(tree.states[goal_idx])
+        actions.append(tree.actions[goal_idx])
+        goal_idx = tree.parents[goal_idx]
+    return jnp.array(path[::-1]), jnp.array(actions[::-1])
+
+def verify_sol(path, actions, obstacles, sst_params, sim_params, callables):
+    for i in range(len(actions)-1):
+        start = path[i][None, :]    # shape: (1, state_dim)
+        action = actions[i+1][None, :]
+        states_end, valid_mask, _ = propagate.rollout_final(
+            start, action, obstacles, sst_params, sim_params, callables
+        )
+        #print(states_end)
+        if not valid_mask:
+            return False
+    return True
+
+# 8192, 16384, 32768, 65536, 131072
+MAX_TREE_SIZE = 200000
+A = 2
+batch_size = 4096
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
-    parser.add_argument('--env', type=str, default='envs/tree.csv', help='Path to environment config.')
-    parser.add_argument('--motion', type=str, default='di', help='di, da, qc')
+    parser.add_argument('--env', type=str, default='envs/quadhouse.csv', help='Path to environment config.')
+    parser.add_argument('--motion', type=str, default='qc', help='di, da, qc')
     args = parser.parse_args()
 
     match args.motion:
@@ -172,6 +203,9 @@ if __name__ == "__main__":
             print("invalid motion type")
             sys.exit()
 
+
+    sst_params = sst_params.replace(batch_size=batch_size)
+    sim_params = sim_params.replace(batch_size=batch_size)
     obstacles = helper.get_obs(args.env)
     
     # Update global references for the JIT closure
@@ -184,6 +218,9 @@ if __name__ == "__main__":
     print("\nStarting RRT - Pre-compiling kernels...")
     dummy_tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.dims, sim_params.action_dims)
     # This triggers the JIT for the while loop and all switch branches
+    init = jnp.concatenate([jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]), jnp.zeros(sim_params.dims - 3, dtype=jnp.float32)], axis=0)
+    controls = jnp.zeros(sim_params.action_dims)
+    dummy_tree, _ = rrtree.add_nodes(dummy_tree, init, controls, -1, 0.0, 1)
     _ = jit_while(dummy_tree, sst_params, sim_params, callables, obstacles, 0)
     print("Compilation complete.\n")
 
@@ -198,8 +235,8 @@ if __name__ == "__main__":
         # Initialize tree with start state
         tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
         tree = jax.device_put(tree)
-        init = jnp.concatenate([jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]), jnp.zeros(sim_params.dims - 3, dtype=jnp.float32)], axis=0)
-        controls = jnp.zeros(sim_params.action_dims)
+        #init = jnp.concatenate([jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]), jnp.zeros(sim_params.dims - 3, dtype=jnp.float32)], axis=0)
+        #controls = jnp.zeros(sim_params.action_dims)
         tree, _ = rrtree.add_nodes(tree, init, controls, -1, 0.0, 1)
 
         start_p = time.perf_counter()
@@ -208,7 +245,19 @@ if __name__ == "__main__":
         result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
         tree, key, goal_mask, goal, states, start_idx, iter_val, size = jax.block_until_ready(result)
         timer = time.perf_counter() - start_p
-        
+
+
+        path, actions = extract_sol(tree, goal_mask, start_idx)
+        #print(path)
+        #print(actions)
+        if actions is not None:
+            is_valid = verify_sol(path, actions, obstacles, sst_params, sim_params, callables)
+            if not is_valid:
+                print("Invalid solution found!")
+                print("Path:", path)
+                print("Actions:", actions)
+
+
         # Calculate cost for stats
         cost = tree.costs[jnp.argmax(goal_mask) + start_idx]
         
@@ -225,7 +274,7 @@ if __name__ == "__main__":
     sizes = jnp.array(sizes)
     costs = jnp.array(costs)
 
-    print(f"\n{goal.dtype}")
+    print(f"\nbatch size: {sim_params.batch_size}, branch factor {A}")
     print(f"Average time over 100 runs: {jnp.mean(times)*1e3:.3f} ms, {jnp.mean(iters):.2f} iterations, size {jnp.mean(sizes):.2f}")
     print(f"min time over 100 runs: {jnp.min(times)*1e3:.3f} ms, {jnp.min(iters)} iterations, min size {jnp.min(sizes)}")
     print(f"max time over 100 runs: {jnp.max(times)*1e3:.3f} ms, {jnp.max(iters)} iterations, max size {jnp.max(sizes)}")
