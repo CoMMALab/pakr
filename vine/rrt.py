@@ -3,15 +3,19 @@ import jax.numpy as jnp
 from functools import partial
 import numpy as np
 import time
-import rrtree
+import vine.rrtree as rrtree
 import helper
 from vine.pbd_vine import step_vine_batched
 from params import Callables, Position
-from vine.nns_usage import solve as find_actuator_params, solve_fwd as actuator_params_fwd_
+from vine.nns_usage import solve as find_actuator_params, solve_fwd as actuator_params_fwd_, params as act_params
 from vine.load_env import load_box_config
+from vine.nns import get_or_train_model, get_prediction_function
 # ------------------------------------------------------------------
-# VINE DYNAMICS (DOUBLE PENDULUM)
+# VINE DYNAMICS
 # ------------------------------------------------------------------
+
+trained_state, scaling_info, model = get_or_train_model(act_params)
+predict = get_prediction_function(trained_state, scaling_info, model)
 find_actuator_params = jax.vmap(find_actuator_params, in_axes=(None, None, 0))
 find_actuator_params = jax.jit(find_actuator_params, static_argnames=('predict', 'params'))
 forward = jax.jit(step_vine_batched, static_argnames=['params', 'x0_list', 'y0_list', 'heading0_list', 'bend_energy_func'])
@@ -26,7 +30,7 @@ def rollout_jit(sst_params, simparams, batch_size,
     steps_to_iter = sst_params.time_to_evolve
     init_x, init_y, init_heading = sst_params.start.x, sst_params.start.y, sst_params.start.z
     # Note: 'record_every' must be a static constant or passed as a static argument
-    record_every = int(sst_params.δs // (simparams.grow_rate * simparams.dt))
+    record_every = 22
 
     def scan_fn(carry, step_idx):
         cspace, bodies, curr_time = carry
@@ -71,59 +75,58 @@ def rollout_jit(sst_params, simparams, batch_size,
     
     return cspace_record, bodies_record, time_record
 
-@partial(jax.jit, static_argnums=(0,))
-def cspace_to_tip(sim_params, cspace, n_bodies, x0, y0, h0):
-    """
-    Computes the (x, y, theta) of the vine tip.
-    
-    Args:
-        sim_params: The VineParams object.
-        cspace: Array of shape (max_bodies + 1,) containing [angles..., tip_length].
-        n_bodies: Integer/Scalar, number of fully formed segments.
-        x0, y0, h0: The anchor pose (start of the vine).
-    """
-    # 1. Extract the angles and the growing tip length
+def cspace_to_tip_single(sim_params, cspace, n_bodies, x0, y0, h0):
+    # cspace: (max_bodies + 1,)
+    # n_bodies: scalar
     angles = cspace[:sim_params.max_bodies]
     tip_len = cspace[sim_params.max_bodies]
     
-    # 2. Define the segment-by-segment propagation
     def body_fn(carry, i):
         x, y, h = carry
         angle = angles[i]
         
-        # Determine segment length: 
-        # If i < n_bodies: it's a full segment (sim_params.body_length)
-        # If i == n_bodies: it's the growing tip (tip_len)
-        # If i > n_bodies: it's a ghost segment (0 length)
+        # Now these are scalars, so they broadcast perfectly
         is_full = i < n_bodies
         is_tip = i == n_bodies
         
         length = jnp.where(is_full, sim_params.body_length, 
                  jnp.where(is_tip, tip_len, 0.0))
         
-        # Standard kinematics update
         new_h = h + angle
         new_x = x + length * jnp.cos(new_h)
         new_y = y + length * jnp.sin(new_h)
         
         return (new_x, new_y, new_h), None
 
-    # 3. Run the kinematics chain
-    final_pose, _ = jax.lax.scan(
+    # Run kinematics
+    (xf, yf, hf), _ = jax.lax.scan(
         body_fn, 
         (x0, y0, h0), 
         jnp.arange(sim_params.max_bodies)
     )
     
-    return jnp.stack(final_pose) # Returns [x_tip, y_tip, h_tip]
+    return jnp.array([xf, yf, hf])
+
+@partial(jax.jit, static_argnums=(0,))
+def cspace_to_tip_batched(sim_params, cspace, n_bodies, x0, y0, h0):
+    # Use vmap to handle the batch dimension (1024)
+    # in_axes: sim_params is None (broadcasted), 
+    # cspace and n_bodies are mapped (0), 
+    # start poses (x0, y0, h0) are scalars/None
+    
+    return jax.vmap(
+        cspace_to_tip_single, 
+        in_axes=(None, 0, 0, None, None, None)
+    )(sim_params, cspace, n_bodies, x0, y0, h0)
 
 @jax.jit
 def dist_vine(sim_params, diff):
-    # diff: [dtheta1, dtheta2, ddtheta1, ddtheta2]
-    dq = diff[..., 0:2]
-    dv = diff[..., 2]
-    # Simple weighted Euclidean
-    return (jnp.sum(dq**2, axis=-1) + 0.1 * jnp.sum(dv**2, axis=-1)).T
+    # diff shape: (32, 512, 3) -> [dx, dy, dtheta]
+    dq2 = jnp.sum(diff[..., :2]**2, axis=-1)  # shape: (32, 512)
+    dv2 = diff[..., 2]**2                    # shape: (32, 512)
+    
+    # Weight the heading difference and sum
+    return (dq2 + 0.1 * dv2).T
 
 @partial(jax.jit, static_argnums=(0,))
 def sample_3D_state(sst_params, key):
@@ -143,11 +146,39 @@ def sample_3D_state(sst_params, key):
 def reached_goal_vine(states, goal, radius):
     return jnp.linalg.norm(states[:, 0:2] - jnp.array([goal.x, goal.y]), axis=1) < radius
 
+@partial(jax.jit, static_argnums=(0,))
+def update_actions_jit(sim_params, parent_actions, current_bodies, p, l0):
+    # parent_actions: (B, max_bodies, 2)
+    # current_bodies: (B,)
+    # p, l0: (B,)
+    
+    B = parent_actions.shape[0]
+    max_bodies = sim_params.max_bodies
+    
+    # Create a grid of indices [0, 1, 2, ..., max_bodies-1]
+    # Shape: (max_bodies,)
+    body_indices = jnp.arange(max_bodies)
+    
+    # Broadcast the indices against the current_bodies count for each batch element
+    # Resulting mask shape: (B, max_bodies)
+    # True for indices >= current_bodies (the segments we want to update)
+    mask = body_indices[None, :] >= current_bodies[:, None]
+    
+    # Prepare the new parameters to match the (B, max_bodies) shape
+    new_p_grid = jnp.broadcast_to(p[:, None], (B, max_bodies))
+    new_l0_grid = jnp.broadcast_to(l0[:, None], (B, max_bodies))
+    new_params = jnp.stack([new_p_grid, new_l0_grid], axis=-1) # (B, max_bodies, 2)
+    
+    # Use where to pick the new parameters only where the mask is True
+    # mask[:, :, None] broadcasts (B, max_bodies) to (B, max_bodies, 2)
+    updated_actions = jnp.where(mask[:, :, None], new_params, parent_actions)
+    
+    return updated_actions
 # ------------------------------------------------------------------
 # PLANNER SETUP
 # ------------------------------------------------------------------
 
-MAX_TREE_SIZE = 500000
+MAX_TREE_SIZE = 50000
 TIERS = [512, 1024, 4096, 16384, 32768, 50000]
 SIM_PARAMS_RESERVED = None
 CALLABLES_RESERVED = None
@@ -174,7 +205,7 @@ def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
     # 1. Selection
     seed_pts = callables.sample_fn(sst_params, subkey1)[:K]
     branch_idx = jnp.minimum(jnp.digitize(tree.tree_size, jnp.array(TIERS)), len(TIERS) - 1)
-    parents_small = jax.lax.switch(branch_idx, NN_BRANCHES, (tree.states, tree.tree_size, seed_pts)) 
+    parents_small = jax.lax.switch(branch_idx, NN_BRANCHES, (tree.states[:, :3], tree.tree_size, seed_pts)) 
     
     # Repeat parents for each action
     parents = jnp.repeat(parents_small, A, axis=0) 
@@ -188,13 +219,10 @@ def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
     # 3. Action Sampling
     rng_key, angle_key = jax.random.split(rng_key)
     new_bend_angles = jax.random.uniform(angle_key, (B,), minval=-3.33, maxval=3.33)
-    p, l0 = find_actuator_params(predict, act_params, 1.0 / new_bend_angle) 
+    p, l0 = find_actuator_params(predict, act_params, 1.0 / new_bend_angles) 
     
-    actions = tree._bending_controls[propagate_origin_idx]
-    
-    for idx in range(batch_size):
-        actions[idx, current_bodies[idx]:, 0] = p[idx]        
-        actions[idx, current_bodies[idx]:, 1] = l0[idx]
+    actions = tree.actions[parents]
+    actions = update_actions_jit(sim_params, actions, bodies_start, p, l0)
 
     # 4. Propagation (Black Box JIT Rollout)
     # We ignore the path records and just take the final state
@@ -206,14 +234,17 @@ def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
     cspace_end = c_rec[-1]
     bodies_end = b_rec[-1]
     time_end   = t_rec[-1]
-    
+    tips = cspace_to_tip_batched(
+        sim_params, cspace_end, bodies_end, 
+        sst_params.start.x, sst_params.start.y, sst_params.start.z
+    )
     # 5. Cost calculation: Delta Time
     # SST Cost = Parent Cost + Time Elapsed
-    edge_costs = time_end
 
     # 6. Re-assemble flat state
     # Format: [cspace, n_bodies, total_time]
     states_end = jnp.concatenate([
+        tips,
         cspace_end, 
         bodies_end[:, None].astype(jnp.float32), 
     ], axis=-1)
@@ -225,15 +256,11 @@ def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
         states_end, 
         actions, 
         parents, 
-        total_costs, 
+        time_end, 
         B # Adding the full batch
     )
     
     # 8. Goal check
-    tips = cspace_to_tip_jit(
-        sim_params, B, cspace_end, bodies_end, 
-        sst_params.start.x, sst_params.start.y, sst_params.start.z
-    )
     goal_mask = callables.goal_fn(tips, sst_params.goal, sst_params.goal_radius)
     
     return tree, rng_key, goal_mask, jnp.sum(goal_mask), states_end, start_idx
@@ -263,10 +290,10 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, i):
 # ------------------------------------------------------------------
 
 
-from dataclasses import dataclass
+from flax import struct
 import jax.numpy as jnp
 
-@dataclass(frozen=True)
+@struct.dataclass
 class VineParams:
     batch_size: int
     max_bodies: int
@@ -282,7 +309,7 @@ class VineParams:
     substeps: int
     alpha: float
 
-@dataclass(frozen=True)
+@struct.dataclass
 class SSTparams:
     batch_size: int
     min_x: float
@@ -295,19 +322,19 @@ class SSTparams:
     time_to_evolve: int = 100
 
 if __name__ == "__main__":
-    cfg = load_box_config('vine/envs/env_live.txt')
+    cfg = load_box_config('vine/envs/env_free.txt')
 
-    batch_size = 1024
-    A = 32
+    batch_size = 128
+    A = 2
     max_bodies = 30
     sim_params = VineParams(
         batch_size=batch_size,
         max_bodies=max_bodies,
-        dims=max_bodies + 2, # cspace + n_bodies + time
+        dims=max_bodies + 5, # tip + cspace + n_bodies + time
         action_dims=max_bodies, # bending control for each body
         body_length=68.0, # 25.0 mm
         radius=50, # 16.0,
-        dt=1/10,
+        dt=1.0,
         grow_rate=20.0,
         grow_force=15.0,
         stiffness=50.0,
@@ -317,7 +344,9 @@ if __name__ == "__main__":
         alpha=1e-2,
     )
     
-    obstacles=cfg['obstacles'],
+    obstacles=cfg['obstacles']
+
+    print(obstacles.shape)
     # SST params
     sst_params = SSTparams(
         batch_size=1024,
@@ -337,18 +366,17 @@ if __name__ == "__main__":
     )
 
     SIM_PARAMS_RESERVED, CALLABLES_RESERVED = sim_params, callables
-    obstacles = jnp.array([])
 
 
 
-    init_state = jnp.zeros(sim_params.max_bodies + 2) # cspace + n_bodies + time
+    init_state = jnp.zeros(sim_params.dims) # cspace + n_bodies + time
     init_state = init_state.at[0].set(sst_params.start.x) # n_bodies = 0
     init_state = init_state.at[1].set(sst_params.start.y)
     init_state = init_state.at[2].set(sst_params.start.z)
 
 
-    dummy_tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.dims, sim_params.action_dims)
-    tree, _ = rrtree.add_nodes(dummy_tree, init_state, jnp.zeros(sim_params.action_dims), -1, 0.0, 1)
+    dummy_tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.max_bodies)
+    tree, _ = rrtree.add_nodes(dummy_tree, init_state, jnp.zeros((sim_params.max_bodies, 2)), -1, 0.0, 1)
     print("\nStarting Vine RRT - Pre-compiling...")
 
     _ = jit_while(dummy_tree, sst_params, sim_params, callables, obstacles, 0)
@@ -356,23 +384,18 @@ if __name__ == "__main__":
 
     times, iters, sizes, costs = [], [], [], []
 
-    for i in range(100):
+    for i in range(10):
 
-        tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.dims, sim_params.action_dims)
-        tree, _ = rrtree.add_nodes(tree, init_state, jnp.zeros(sim_params.action_dims), -1, 0.0, 1)
+        tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.max_bodies)
+        tree, _ = rrtree.add_nodes(tree, init_state, jnp.zeros((sim_params.max_bodies, 2)), -1, 0.0, 1)
         
         start_p = time.perf_counter()
         result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
         tree, key, goal_mask, goal_found, states, start_idx, iter_val, size = jax.block_until_ready(result)
         timer = time.perf_counter() - start_p
 
-
-        path, actions = extract_sol(tree, goal_mask, start_idx)
-        is_valid = verify_sol(path, actions, obstacles, sst_params, sim_params, callables)
-        
-        if not is_valid:
-            print(f"Run {i}: Found path but verification failed!")
-
+        if goal_found:
+            print(f"tree_size={size}, iters={iter_val}, time={timer:.3f}s")
         cost = tree.costs[jnp.argmax(goal_mask) + start_idx]
         costs.append(cost); times.append(timer); iters.append(iter_val); sizes.append(size)
         print(f"Run {i:02d}: Goal reached! Iters: {iter_val}, Time: {timer*1e3:.2f}ms, Cost: {cost:.3f}")

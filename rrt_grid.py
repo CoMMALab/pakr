@@ -184,12 +184,12 @@ def verify_sol(path, actions, obstacles, sst_params, sim_params, callables):
 
 # 8192, 16384, 32768, 65536, 131072
 MAX_TREE_SIZE = 200000
-A = 2
-batch_size = 4096
+A = 128
+batch_size = 32768
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
-    parser.add_argument('--env', type=str, default='envs/quadhouse.csv', help='Path to environment config.')
-    parser.add_argument('--motion', type=str, default='qc', help='di, da, qc')
+    parser.add_argument('--env', type=str, default='envs/tree.csv', help='Path to environment config.')
+    parser.add_argument('--motion', type=str, default='di', help='di, da, qc')
     args = parser.parse_args()
 
     match args.motion:
@@ -243,6 +243,7 @@ if __name__ == "__main__":
 
         # Solve
         result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
+        result[3].block_until_ready()  # Ensure all computations are done before timing
         tree, key, goal_mask, goal, states, start_idx, iter_val, size = jax.block_until_ready(result)
         timer = time.perf_counter() - start_p
 

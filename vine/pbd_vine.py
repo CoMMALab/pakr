@@ -130,31 +130,49 @@ def cspace_to_positions(params: VineParams, cspace: jnp.ndarray,
 ######################################################
 # Collision / SDF
 ######################################################
+# def point_rect_sdf(px, py, rect):
+#     """
+#     Signed distance from a point (px,py) to axis-aligned rectangle [rx1,ry1, rx2,ry2].
+#     If inside, distance is negative.
+#     Otherwise positive. 
+#     We'll do the usual approach:
+#       dx = max( [rx1 - px, 0, px - rx2] ), 
+#       dy = max( [ry1 - py, 0, py - ry2] ),
+#       dist = sqrt(dx^2 + dy^2).
+#     If px in [rx1,rx2], dx=0. If py in [ry1,ry2], dy=0. 
+#     Then sign is negative if px is strictly inside in both x,y.
+#     """
+#     rx1, ry1, rx2, ry2 = rect
+#     dx = jnp.where(px < rx1, rx1 - px, 0.0)
+#     dx = jnp.where(px > rx2, px - rx2, dx)
+#     dy = jnp.where(py < ry1, ry1 - py, 0.0)
+#     dy = jnp.where(py > ry2, py - ry2, dy)
+#     dist_out = jnp.sqrt(dx*dx + dy*dy)
+#     # Check if inside
+#     inside = jnp.logical_and( (px>=rx1)&(px<=rx2), (py>=ry1)&(py<=ry2))
+#     # If inside => negative distance, we approximate how negative by min distance to an edge
+#     # The distance to an edge is min( (px - rx1), (rx2 - px), (py - ry1), (ry2 - py) ), but we can do it carefully
+#     if_inside_dist = jnp.min(jnp.array([px-rx1, rx2-px, py-ry1, ry2-py]))
+#     dist_signed = jnp.where(inside, -if_inside_dist, dist_out)
+#     return dist_signed
+
 def point_rect_sdf(px, py, rect):
-    """
-    Signed distance from a point (px,py) to axis-aligned rectangle [rx1,ry1, rx2,ry2].
-    If inside, distance is negative.
-    Otherwise positive. 
-    We'll do the usual approach:
-      dx = max( [rx1 - px, 0, px - rx2] ), 
-      dy = max( [ry1 - py, 0, py - ry2] ),
-      dist = sqrt(dx^2 + dy^2).
-    If px in [rx1,rx2], dx=0. If py in [ry1,ry2], dy=0. 
-    Then sign is negative if px is strictly inside in both x,y.
-    """
-    rx1, ry1, rx2, ry2 = rect
-    dx = jnp.where(px < rx1, rx1 - px, 0.0)
-    dx = jnp.where(px > rx2, px - rx2, dx)
-    dy = jnp.where(py < ry1, ry1 - py, 0.0)
-    dy = jnp.where(py > ry2, py - ry2, dy)
-    dist_out = jnp.sqrt(dx*dx + dy*dy)
-    # Check if inside
-    inside = jnp.logical_and( (px>=rx1)&(px<=rx2), (py>=ry1)&(py<=ry2))
-    # If inside => negative distance, we approximate how negative by min distance to an edge
-    # The distance to an edge is min( (px - rx1), (rx2 - px), (py - ry1), (ry2 - py) ), but we can do it carefully
-    if_inside_dist = jnp.min(jnp.array([px-rx1, rx2-px, py-ry1, ry2-py]))
-    dist_signed = jnp.where(inside, -if_inside_dist, dist_out)
-    return dist_signed
+    rx1, ry1, rx2, ry2 = rect # Unpacks (4,)
+    
+    # Distance to exterior (0 if inside)
+    dx_out = jnp.maximum(jnp.maximum(rx1 - px, px - rx2), 0.0)
+    dy_out = jnp.maximum(jnp.maximum(ry1 - py, py - ry2), 0.0)
+    dist_out = jnp.sqrt(dx_out**2 + dy_out**2)
+    
+    # Distance to interior (min distance to any wall)
+    # We use negative for 'inside'
+    dx_in = jnp.minimum(px - rx1, rx2 - px)
+    dy_in = jnp.minimum(py - ry1, ry2 - py)
+    dist_in = jnp.minimum(dx_in, dy_in)
+    
+    # If dist_in > 0, we are inside. 
+    # Logic: if outside, use dist_out. If inside, use -dist_in.
+    return jnp.where(dist_in > 0, -dist_in, dist_out)
     
 def tube_sdf(pxy):
     """
@@ -208,10 +226,8 @@ def vine_collision_sdf(params: VineParams, body_xy: jnp.ndarray, n_bodies: int, 
         # Then we subtract radius
         return min_dist - params.radius
     
-    if params.use_tube_obstacle:
-        sd_vals = vmap(tube_sdf)(body_xy)
-    else:
-        sd_vals = vmap(dist_to_all_rects)(body_xy)
+
+    sd_vals = vmap(dist_to_all_rects)(body_xy)
     
     # Mask out the segments that don't exist
     mask = jnp.arange(params.max_bodies) < n_bodies
