@@ -33,9 +33,15 @@ def visualize_obstacles_plotly_ssh(csv_path):
             x=x, y=y, z=z, i=i_idx, j=j_idx, k=k_idx,
             opacity=opacity,
             color=color,
-            flatshading=True,
-            lighting=dict(ambient=0.6, diffuse=1, roughness=0.1, specular=1, fresnel=2),
-            lightposition=dict(x=10, y=10, z=10)
+            flatshading=True, # Keeps faces sharp and flat
+            lighting=dict(
+                ambient=0.3,      # Lowered from 0.6 to allow for shadows
+                diffuse=0.9,      # High diffuse light to differentiate angles
+                fresnel=0.5,      # Adds highlights to edges
+                specular=2.0,     # Stronger reflections on the faces facing the light
+                roughness=0.1     # Makes the surface look a bit more "polished"
+            ),
+            lightposition=dict(x=10, y=10, z=10) # Light coming from the top-corner
         ))
 
     title = os.path.basename(csv_path).split('.')[0]
