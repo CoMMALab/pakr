@@ -28,18 +28,20 @@ def visualize_obstacles_plotly_ssh(csv_path):
 
         fig.add_trace(go.Mesh3d(
             x=x, y=y, z=z, i=i_idx, j=j_idx, k=k_idx,
-            opacity=opacity,
-            color=color,
+            opacity=0.6,          # Slightly lower opacity helps the lines pop
+            color='lightgrey',
             flatshading=True,
-            # --- HIGH CONTRAST OUTLINES ---
+            
+            # --- THIS PART FIXES THE OUTLINES ---
             contour=dict(
                 show=True, 
-                color='black', # Use black for maximum visibility
-                width=2        # A width of 2-4 is usually best for scannability
+                color='black',    # Use black instead of darkgrey for contrast
+                width=3           # Increased width to make them scannable
             ),
-            # --- SHARPER LIGHTING ---
+            
+            # --- IMPROVED LIGHTING FOR DEPTH ---
             lighting=dict(
-                ambient=0.3,   # Lower ambient makes shadows more distinct
+                ambient=0.3,      # Lower ambient creates deeper shadows on side faces
                 diffuse=0.9, 
                 roughness=0.1, 
                 specular=1, 
