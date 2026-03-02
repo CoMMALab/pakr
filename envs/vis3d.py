@@ -39,7 +39,7 @@ def add_box_edges(fig, x, y, z):
             y=[y[e[0]], y[e[1]]],
             z=[z[e[0]], z[e[1]]],
             mode='lines',
-            line=dict(color='black', width=6),
+            line=dict(color='black', width=3),
             showlegend=False
         ))
 
@@ -71,7 +71,7 @@ def visualize_obstacles_plotly(csv_path):
             j=j,
             k=k,
             color='lightgrey',
-            opacity=0.9,
+            opacity=0.7,
             flatshading=True,
 
             # Improved lighting for strong face contrast
