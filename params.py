@@ -182,7 +182,7 @@ batch_size = 32768
 #batch_size = 65536
 #batch_size = 4096
 seed = 0
-time_to_evolve = 10
+time_to_evolve = 100
 # Safe params
 
 # callables_MCP = Callables(
@@ -215,7 +215,7 @@ sim_params_DI = MJXparams(
     bounds = Bounds(),
     dims=6,
     action_dims=3,
-    dt = 0.2,
+    dt = 0.02,
     seed = seed
 )
 
