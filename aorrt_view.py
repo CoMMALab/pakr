@@ -167,7 +167,7 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, best_cost, i):
 MAX_TREE_SIZE = 70000
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
-    parser.add_argument('--env', type=str, default='envs/narrow.csv', help='Path to the environment config file.')
+    parser.add_argument('--env', type=str, default='envs/house.csv', help='Path to the environment config file.')
     parser.add_argument('--motion', type=str, default='di', help='Define motion type: Double Integrator (di), Dubins Airplane (da), Quadcopter (qc), Mjx Cartpole (mcp)')
     args = parser.parse_args()
 
@@ -291,7 +291,7 @@ if __name__ == "__main__":
     # --- Configuration ---
     N_RUNS = 10
     MAX_TIME = 3.0       
-    COST_THRESHOLD = 1.7
+    COST_THRESHOLD = 3.5
     GT_MIN_COST = 1.403  
     all_trajectories = [] 
 
