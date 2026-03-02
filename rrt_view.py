@@ -12,7 +12,7 @@ import helper
 import time
 import gc
 import numpy as np
-
+import plotly.graph_objects as go
 # ------------------------------------------------------------------
 # 1. Tiered Nearest Neighbor Kernels
 # ------------------------------------------------------------------
@@ -182,6 +182,73 @@ def verify_sol(path, actions, obstacles, sst_params, sim_params, callables):
             return False
     return True
 
+
+    # ... (Keep all your existing imports and JAX kernels above) ...
+
+def rollout_full_trajectory(start_state, actions, sst_params, sim_params, callables):
+    """Reconstructs every intermediate state for a sequence of actions using physics."""
+    steps_per_action = sst_params.time_to_evolve
+    dt = sim_params.dt
+    
+    current_state = start_state[None, :] 
+    trajectory = [start_state]
+
+    for action in actions:
+        batched_action = action[None, :]
+        for _ in range(steps_per_action):
+            current_state = callables.prop_fn(
+                current_state, batched_action, dt, sim_params.physics_constants
+            )
+            trajectory.append(current_state.reshape(-1)) 
+            
+    return jnp.stack(trajectory)
+
+def visualize_final_solution(env_path, trajectory, sst_params, output_name="./solution.html"):
+    """Generates the 3D HTML visualization with obstacles and the planned path."""
+    import plotly.graph_objects as go
+    
+    # Load Environment Obstacles
+    data = np.loadtxt(env_path, delimiter=',', skiprows=1)
+    if data.ndim == 1: data = data.reshape(1, -1)
+    
+    fig = go.Figure()
+
+    # 1. Add Obstacles (Grey Meshes with outlines)
+    for box in data:
+        x1, y1, z1, x2, y2, z2 = box
+        x = [x1, x1, x2, x2, x1, x1, x2, x2]
+        y = [y1, y2, y2, y1, y1, y2, y2, y1]
+        z = [z1, z1, z1, z1, z2, z2, z2, z2]
+        i_idx = [7,0,0,0,4,4,6,6,4,0,3,2]; j_idx = [3,4,1,2,5,6,5,2,0,1,6,3]; k_idx = [0,7,2,3,6,7,1,1,5,5,7,6]
+        
+        fig.add_trace(go.Mesh3d(
+            x=x, y=y, z=z, i=i_idx, j=j_idx, k=k_idx,
+            opacity=0.3, color='lightgrey', flatshading=True,
+            contour=dict(show=True, color='#333333', width=2)
+        ))
+
+    # 2. Add Solution Path (Green Line)
+    fig.add_trace(go.Scatter3d(
+        x=trajectory[:, 0], y=trajectory[:, 1], z=trajectory[:, 2],
+        mode='lines', line=dict(color='limegreen', width=5), name='Path'
+    ))
+
+    # 3. Add Start and Goal Markers
+    fig.add_trace(go.Scatter3d(
+        x=[sst_params.start.x], y=[sst_params.start.y], z=[sst_params.start.z],
+        mode='markers', marker=dict(size=6, color='blue'), name='Start'
+    ))
+    
+    fig.add_trace(go.Scatter3d(
+        x=[sst_params.goal.x], y=[sst_params.goal.y], z=[sst_params.goal.z],
+        mode='markers', marker=dict(size=10, color='red', opacity=0.5), name='Goal'
+    ))
+
+    fig.update_layout(scene=dict(aspectmode='data'), margin=dict(l=0,r=0,b=0,t=0))
+    fig.write_html(output_name)
+    print(f"\nVisualization saved to {output_name}")
+
+
 # 8192, 16384, 32768, 65536, 131072
 MAX_TREE_SIZE = 400000
 A = 16
@@ -224,33 +291,36 @@ if __name__ == "__main__":
     _ = jit_while(dummy_tree, sst_params, sim_params, callables, obstacles, 0)
     print("Compilation complete.\n")
 
+    # ------------------------------------------------------------------
+    # 3. Execution Loop & Statistics
+    # ------------------------------------------------------------------
+    all_trajectories = [] # To store successful paths
 
+    for i in range(10):
+        gc.collect()
+        tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
+        tree = jax.device_put(tree)
+        tree, _ = rrtree.add_nodes(tree, init, controls, -1, 0.0, 1)
 
-    tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
-    tree = jax.device_put(tree)
-    #init = jnp.concatenate([jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]), jnp.zeros(sim_params.dims - 3, dtype=jnp.float32)], axis=0)
-    #controls = jnp.zeros(sim_params.action_dims)
-    tree, _ = rrtree.add_nodes(tree, init, controls, -1, 0.0, 1)
+        start_p = time.perf_counter()
+        result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
+        tree, key, goal_mask, goal, states, start_idx, iter_val, size = jax.block_until_ready(result)
+        timer = time.perf_counter() - start_p
 
-    start_p = time.perf_counter()
+        path_nodes, actions = extract_sol(tree, goal_mask, start_idx)
+        
+        if actions is not None:
+            # Reconstruct and store the trajectory for visualization
+            traj = rollout_full_trajectory(path_nodes[0], actions, sst_params, sim_params, callables)
+            all_trajectories.append(traj)
+            
+            cost = tree.costs[jnp.argmax(goal_mask) + start_idx]
+            print(f"Run {i}: Goal reached. Cost: {cost:.3f}, Time: {timer*1e3:.2f}ms")
+        else:
+            print(f"Run {i}: No solution.")
 
-    # Solve
-    result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
-    result[3].block_until_ready()  # Ensure all computations are done before timing
-    tree, key, goal_mask, goal, states, start_idx, iter_val, size = jax.block_until_ready(result)
-    timer = time.perf_counter() - start_p
-
-
-    path, actions = extract_sol(tree, goal_mask, start_idx)
-    #print(path)
-    #print(actions)
-    if actions is not None:
-        is_valid = verify_sol(path, actions, obstacles, sst_params, sim_params, callables)
-        if not is_valid:
-            print("Invalid solution found!")
-            print("Path:", path)
-            print("Actions:", actions)
-            return
-
-    
-
+    # Visualize the first successful trajectory found
+    if all_trajectories:
+        visualize_final_solution(args.env, all_trajectories[0], sst_params, "./solution.html")
+    else:
+        print("No successful runs to visualize.")

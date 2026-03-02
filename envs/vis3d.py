@@ -32,7 +32,7 @@ def visualize_obstacles_plotly_ssh(csv_path):
             color=color,
             flatshading=True,
             # --- DARK OUTLINES ---
-            contour=dict(show=True, color='#333333', width=4),
+            contour=dict(show=True, color='#666666', width=4),
             # --- IMPROVED LIGHTING ---
             lighting=dict(
                 ambient=0.4, 
