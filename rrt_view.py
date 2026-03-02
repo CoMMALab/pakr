@@ -186,6 +186,47 @@ def verify_sol(path, actions, obstacles, sst_params, sim_params, callables):
     # ... (Keep all your existing imports and JAX kernels above) ...
 
 import plotly.express as px
+def create_box_mesh(x1, y1, z1, x2, y2, z2):
+    """
+    Returns vertices and triangle indices for a box defined
+    by min corner (x1,y1,z1) and max corner (x2,y2,z2)
+    """
+
+    # 8 vertices of box
+    x = [x1, x1, x2, x2, x1, x1, x2, x2]
+    y = [y1, y2, y2, y1, y1, y2, y2, y1]
+    z = [z1, z1, z1, z1, z2, z2, z2, z2]
+
+    # 12 triangles (2 per face)
+    i = [0, 0, 4, 4, 0, 1, 2, 3, 6, 6, 5, 4]
+    j = [1, 2, 5, 6, 4, 5, 3, 7, 2, 7, 1, 0]
+    k = [2, 3, 6, 7, 5, 6, 7, 6, 7, 4, 0, 5]
+
+    return x, y, z, i, j, k
+
+
+def add_box_edges(fig, x, y, z):
+    """
+    Adds explicit black edges to the figure for visual clarity.
+    """
+
+    edges = [
+        (0,1),(1,2),(2,3),(3,0),      # bottom
+        (4,5),(5,6),(6,7),(7,4),      # top
+        (0,4),(1,5),(2,6),(3,7)       # vertical
+    ]
+
+    for e in edges:
+        fig.add_trace(go.Scatter3d(
+            x=[x[e[0]], x[e[1]]],
+            y=[y[e[0]], y[e[1]]],
+            z=[z[e[0]], z[e[1]]],
+            mode='lines',
+            line=dict(color='black', width=3),
+            showlegend=False
+        ))
+
+
 def rollout_full_trajectory(start_state, actions, sst_params, sim_params, callables):
     """Reconstructs every intermediate state for a sequence of actions using physics."""
     steps_per_action = sst_params.time_to_evolve
@@ -209,56 +250,80 @@ def visualize_multi_trajectories(env_path, trajectories, sst_params, output_name
     
     # Load Environment Obstacles
     data = np.loadtxt(env_path, delimiter=',', skiprows=1)
-    if data.ndim == 1: data = data.reshape(1, -1)
+    if data.ndim == 1: 
+        data = data.reshape(1, -1)
     
     fig = go.Figure()
 
-    # 1. Add Obstacles (Grey Meshes with outlines)
+    # 1. Add Obstacles (Matching your Env Visualizer Style)
     for box in data:
         x1, y1, z1, x2, y2, z2 = box
-        x = [x1, x1, x2, x2, x1, x1, x2, x2]
-        y = [y1, y2, y2, y1, y1, y2, y2, y1]
-        z = [z1, z1, z1, z1, z2, z2, z2, z2]
-        i_idx = [7,0,0,0,4,4,6,6,4,0,3,2]; j_idx = [3,4,1,2,5,6,5,2,0,1,6,3]; k_idx = [0,7,2,3,6,7,1,1,5,5,7,6]
-        
+        x, y, z, i, j, k = create_box_mesh(x1, y1, z1, x2, y2, z2)
+
+        # Add solid box mesh
         fig.add_trace(go.Mesh3d(
-            x=x, y=y, z=z, i=i_idx, j=j_idx, k=k_idx,
-            opacity=0.15, color='lightgrey', flatshading=True,
-            contour=dict(show=True, color='#333333', width=2),
+            x=x, y=y, z=z, i=i, j=j, k=k,
+            color='lightgrey',
+            opacity=0.7,
+            flatshading=True,
+            lighting=dict(
+                ambient=0.05,
+                diffuse=1.0,
+                roughness=1.0,
+                specular=0.0,
+                fresnel=0.0
+            ),
+            lightposition=dict(x=5, y=5, z=10),
             showlegend=False
         ))
 
-    # 2. Add Solution Paths (Multi-color)
-    # Using a color scale to differentiate paths
-    colors = px.colors.qualitative.Plotly 
+        # Add black wireframe edges
+        add_box_edges(fig, x, y, z)
+
+    # 2. Add Solution Paths (Uniform Green Color)
     for idx, traj in enumerate(trajectories):
-        color = colors[idx % len(colors)]
         fig.add_trace(go.Scatter3d(
             x=traj[:, 0], y=traj[:, 1], z=traj[:, 2],
             mode='lines', 
-            line=dict(color=color, width=4), 
-            name=f'Run {idx+1}'
+            line=dict(color='green', width=5), 
+            name=f'Solution {idx+1}',
+            legendgroup="Solutions",
+            showlegend=(idx == 0) # Only show one legend entry for all green lines
         ))
 
     # 3. Add Start and Goal Markers
     fig.add_trace(go.Scatter3d(
         x=[sst_params.start.x], y=[sst_params.start.y], z=[sst_params.start.z],
-        mode='markers', marker=dict(size=6, color='blue'), name='Start'
+        mode='markers', 
+        marker=dict(size=6, color='blue', symbol='diamond'), 
+        name='Start'
     ))
     
     fig.add_trace(go.Scatter3d(
         x=[sst_params.goal.x], y=[sst_params.goal.y], z=[sst_params.goal.z],
-        mode='markers', marker=dict(size=10, color='red', opacity=0.4), name='Goal Area'
+        mode='markers', 
+        marker=dict(size=12, color='red', opacity=0.5), 
+        name='Goal Area'
     ))
 
+    # 4. Scene Configuration (Matching your Env Visualizer)
     fig.update_layout(
-        scene=dict(aspectmode='data', xaxis_title='X', yaxis_title='Y', zaxis_title='Z'),
+        scene=dict(
+            xaxis=dict(title='X', showbackground=True, backgroundcolor="rgb(240,240,240)"),
+            yaxis=dict(title='Y', showbackground=True, backgroundcolor="rgb(240,240,240)"),
+            zaxis=dict(title='Z', showbackground=True, backgroundcolor="rgb(240,240,240)"),
+            aspectmode='data',
+            camera=dict(eye=dict(x=1.6, y=1.6, z=1.3))
+        ),
         margin=dict(l=0, r=0, b=0, t=0),
+        paper_bgcolor='white',
         legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
     )
     
+    # Ensure directory exists
+    os.makedirs(os.path.dirname(os.path.abspath(output_name)), exist_ok=True)
     fig.write_html(output_name)
-    print(f"\nVisualization with {len(trajectories)} trajectories saved to {output_name}")
+    print(f"Visualization with {len(trajectories)} trajectories saved to: {output_name}")
 
 
 # 8192, 16384, 32768, 65536, 131072
@@ -310,27 +375,22 @@ if __name__ == "__main__":
 
     for i in range(10):
         gc.collect()
-        
-        # Initialize tree with start state
         tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
         tree = jax.device_put(tree)
         tree, _ = rrtree.add_nodes(tree, init, controls, -1, 0.0, 1)
 
-        # Solve
         result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
         tree, key, goal_mask, goal, states, start_idx, iter_val, size = jax.block_until_ready(result)
 
         path_nodes, actions = extract_sol(tree, goal_mask, start_idx)
         
         if actions is not None:
-            # Reconstruct and store the trajectory
             traj = rollout_full_trajectory(path_nodes[0], actions, sst_params, sim_params, callables)
             all_trajectories.append(traj)
             print(f"Run {i}: Path found and reconstructed.")
         else:
             print(f"Run {i}: No path found.")
 
-    # Visualize all successful paths
     if all_trajectories:
         visualize_multi_trajectories(args.env, all_trajectories, sst_params, "./solution.html")
     else:
