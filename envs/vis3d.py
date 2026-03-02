@@ -14,12 +14,10 @@ def visualize_obstacles_plotly_ssh(csv_path):
         x1, y1, z1, x2, y2, z2 = box
         
         # Logic to differentiate Floors/Walls from Furniture
-        volume = (x2-x1) * (y2-y1) * (z2-z1)
-        is_thin = (z2 - z1) < 0.05 or (x2 - x1) < 0.05 or (y2 - y1) < 0.05
         
         # Visual settings: Floors/Walls are light grey/transparent, Furniture is Red
-        color = 'lightgrey' if (is_thin or volume > 0.5) else 'red'
-        opacity = 0.2 if (is_thin or volume > 0.5) else 0.9
+        color = 'lightgrey' 
+        opacity = 0.5 
 
         # Vertices and Triangles for a 3D Mesh Box
         x = [x1, x1, x2, x2, x1, x1, x2, x2]
@@ -54,7 +52,7 @@ def visualize_obstacles_plotly_ssh(csv_path):
     )
 
     # Save to the specific directory your previous script used
-    output_path = f'envs/vis/{title}.png'
+    output_path = f'envs/vis/{title}.html'
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
     # Scale=2 makes the PNG high-res
