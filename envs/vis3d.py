@@ -129,4 +129,4 @@ def visualize_obstacles_plotly(csv_path):
 
 
 if __name__ == "__main__":
-    visualize_obstacles_plotly('envs/house.csv')
+    visualize_obstacles_plotly('envs/tree.csv')
