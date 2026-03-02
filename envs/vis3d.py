@@ -14,8 +14,8 @@ def visualize_obstacles_plotly_ssh(csv_path):
         x1, y1, z1, x2, y2, z2 = box
         
         # Color and Opacity
-        color = 'lightgrey' 
-        opacity = 0.5 
+        color = 'grey' 
+        opacity = 0.7
 
         # Vertices and Triangles
         x = [x1, x1, x2, x2, x1, x1, x2, x2]
@@ -32,7 +32,7 @@ def visualize_obstacles_plotly_ssh(csv_path):
             color=color,
             flatshading=True,
             # --- DARK OUTLINES ---
-            contour=dict(show=True, color='#666666', width=4),
+            contour=dict(show=True, color='darkgrey', width=4),
             # --- IMPROVED LIGHTING ---
             lighting=dict(
                 ambient=0.4, 
