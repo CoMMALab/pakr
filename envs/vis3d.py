@@ -17,7 +17,7 @@ def visualize_obstacles_plotly_ssh(csv_path):
         
         # Visual settings: Floors/Walls are light grey/transparent, Furniture is Red
         color = 'lightgrey' 
-        opacity = 0.5 
+        opacity = 0.8 
 
         # Vertices and Triangles for a 3D Mesh Box
         x = [x1, x1, x2, x2, x1, x1, x2, x2]
