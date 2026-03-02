@@ -185,6 +185,7 @@ def verify_sol(path, actions, obstacles, sst_params, sim_params, callables):
 
     # ... (Keep all your existing imports and JAX kernels above) ...
 
+import plotly.express as px
 def rollout_full_trajectory(start_state, actions, sst_params, sim_params, callables):
     """Reconstructs every intermediate state for a sequence of actions using physics."""
     steps_per_action = sst_params.time_to_evolve
@@ -203,9 +204,8 @@ def rollout_full_trajectory(start_state, actions, sst_params, sim_params, callab
             
     return jnp.stack(trajectory)
 
-def visualize_final_solution(env_path, trajectory, sst_params, output_name="./solution.html"):
-    """Generates the 3D HTML visualization with obstacles and the planned path."""
-    import plotly.graph_objects as go
+def visualize_multi_trajectories(env_path, trajectories, sst_params, output_name="./solution.html"):
+    """Generates the 3D HTML visualization with obstacles and multiple planned paths."""
     
     # Load Environment Obstacles
     data = np.loadtxt(env_path, delimiter=',', skiprows=1)
@@ -223,15 +223,22 @@ def visualize_final_solution(env_path, trajectory, sst_params, output_name="./so
         
         fig.add_trace(go.Mesh3d(
             x=x, y=y, z=z, i=i_idx, j=j_idx, k=k_idx,
-            opacity=0.3, color='lightgrey', flatshading=True,
-            contour=dict(show=True, color='#333333', width=2)
+            opacity=0.15, color='lightgrey', flatshading=True,
+            contour=dict(show=True, color='#333333', width=2),
+            showlegend=False
         ))
 
-    # 2. Add Solution Path (Green Line)
-    fig.add_trace(go.Scatter3d(
-        x=trajectory[:, 0], y=trajectory[:, 1], z=trajectory[:, 2],
-        mode='lines', line=dict(color='limegreen', width=5), name='Path'
-    ))
+    # 2. Add Solution Paths (Multi-color)
+    # Using a color scale to differentiate paths
+    colors = px.colors.qualitative.Plotly 
+    for idx, traj in enumerate(trajectories):
+        color = colors[idx % len(colors)]
+        fig.add_trace(go.Scatter3d(
+            x=traj[:, 0], y=traj[:, 1], z=traj[:, 2],
+            mode='lines', 
+            line=dict(color=color, width=4), 
+            name=f'Run {idx+1}'
+        ))
 
     # 3. Add Start and Goal Markers
     fig.add_trace(go.Scatter3d(
@@ -241,12 +248,17 @@ def visualize_final_solution(env_path, trajectory, sst_params, output_name="./so
     
     fig.add_trace(go.Scatter3d(
         x=[sst_params.goal.x], y=[sst_params.goal.y], z=[sst_params.goal.z],
-        mode='markers', marker=dict(size=10, color='red', opacity=0.5), name='Goal'
+        mode='markers', marker=dict(size=10, color='red', opacity=0.4), name='Goal Area'
     ))
 
-    fig.update_layout(scene=dict(aspectmode='data'), margin=dict(l=0,r=0,b=0,t=0))
+    fig.update_layout(
+        scene=dict(aspectmode='data', xaxis_title='X', yaxis_title='Y', zaxis_title='Z'),
+        margin=dict(l=0, r=0, b=0, t=0),
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
+    )
+    
     fig.write_html(output_name)
-    print(f"\nVisualization saved to {output_name}")
+    print(f"\nVisualization with {len(trajectories)} trajectories saved to {output_name}")
 
 
 # 8192, 16384, 32768, 65536, 131072
@@ -294,33 +306,32 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # 3. Execution Loop & Statistics
     # ------------------------------------------------------------------
-    all_trajectories = [] # To store successful paths
+    all_trajectories = [] 
 
     for i in range(10):
         gc.collect()
+        
+        # Initialize tree with start state
         tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
         tree = jax.device_put(tree)
         tree, _ = rrtree.add_nodes(tree, init, controls, -1, 0.0, 1)
 
-        start_p = time.perf_counter()
+        # Solve
         result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
         tree, key, goal_mask, goal, states, start_idx, iter_val, size = jax.block_until_ready(result)
-        timer = time.perf_counter() - start_p
 
         path_nodes, actions = extract_sol(tree, goal_mask, start_idx)
         
         if actions is not None:
-            # Reconstruct and store the trajectory for visualization
+            # Reconstruct and store the trajectory
             traj = rollout_full_trajectory(path_nodes[0], actions, sst_params, sim_params, callables)
             all_trajectories.append(traj)
-            
-            cost = tree.costs[jnp.argmax(goal_mask) + start_idx]
-            print(f"Run {i}: Goal reached. Cost: {cost:.3f}, Time: {timer*1e3:.2f}ms")
+            print(f"Run {i}: Path found and reconstructed.")
         else:
-            print(f"Run {i}: No solution.")
+            print(f"Run {i}: No path found.")
 
-    # Visualize the first successful trajectory found
+    # Visualize all successful paths
     if all_trajectories:
-        visualize_final_solution(args.env, all_trajectories[0], sst_params, "./solution.html")
+        visualize_multi_trajectories(args.env, all_trajectories, sst_params, "./solution.html")
     else:
-        print("No successful runs to visualize.")
+        print("No successful runs found to visualize.")
