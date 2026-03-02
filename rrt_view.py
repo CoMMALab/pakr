@@ -285,7 +285,7 @@ def visualize_multi_trajectories(env_path, trajectories, sst_params, output_name
         fig.add_trace(go.Scatter3d(
             x=traj[:, 0], y=traj[:, 1], z=traj[:, 2],
             mode='lines', 
-            line=dict(color='green', width=5), 
+            line=dict(color='lightgreen', width=5), 
             name=f'Solution {idx+1}',
             legendgroup="Solutions",
             showlegend=(idx == 0) # Only show one legend entry for all green lines
@@ -332,7 +332,7 @@ A = 128
 batch_size = 32768
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
-    parser.add_argument('--env', type=str, default='envs/narrow.csv', help='Path to environment config.')
+    parser.add_argument('--env', type=str, default='envs/house.csv', help='Path to environment config.')
     parser.add_argument('--motion', type=str, default='di', help='di, da, qc')
     args = parser.parse_args()
 
@@ -392,6 +392,6 @@ if __name__ == "__main__":
             print(f"Run {i}: No path found.")
 
     if all_trajectories:
-        visualize_multi_trajectories(args.env, all_trajectories, sst_params, "./solution1.html")
+        visualize_multi_trajectories(args.env, all_trajectories, sst_params, "./solution2.html")
     else:
         print("No successful runs found to visualize.")
