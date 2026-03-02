@@ -222,7 +222,8 @@ def add_box_edges(fig, x, y, z):
             y=[y[e[0]], y[e[1]]],
             z=[z[e[0]], z[e[1]]],
             mode='lines',
-            line=dict(color='black', width=3),
+            line=dict(color='grey', width=3),
+            opacity=0.5,
             showlegend=False
         ))
 
@@ -332,7 +333,7 @@ A = 128
 batch_size = 32768
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
-    parser.add_argument('--env', type=str, default='envs/tree.csv', help='Path to environment config.')
+    parser.add_argument('--env', type=str, default='envs/house.csv', help='Path to environment config.')
     parser.add_argument('--motion', type=str, default='di', help='di, da, qc')
     args = parser.parse_args()
 
@@ -392,6 +393,6 @@ if __name__ == "__main__":
             print(f"Run {i}: No path found.")
 
     if all_trajectories:
-        visualize_multi_trajectories(args.env, all_trajectories, sst_params, "./solution1.html")
+        visualize_multi_trajectories(args.env, all_trajectories, sst_params, "./solution2.html")
     else:
         print("No successful runs found to visualize.")
