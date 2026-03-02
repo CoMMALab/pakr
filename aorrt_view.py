@@ -164,7 +164,7 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, best_cost, i):
     tree, key, goal_mask, goal, states, start_idx, iter = jax.lax.while_loop(cond_fn, body_fn, init_carry)
     return tree, key, goal_mask, goal, states, start_idx, iter, tree.tree_size
 
-MAX_TREE_SIZE = 70000
+MAX_TREE_SIZE = 200000
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
     parser.add_argument('--env', type=str, default='envs/house.csv', help='Path to the environment config file.')
@@ -290,8 +290,8 @@ if __name__ == "__main__":
 
     # --- Configuration ---
     N_RUNS = 10
-    MAX_TIME = 3.0       
-    COST_THRESHOLD = 3.0
+    MAX_TIME = 5.0       
+    COST_THRESHOLD = 2.9
     GT_MIN_COST = 1.403  
     all_trajectories = [] 
 
