@@ -183,13 +183,13 @@ def verify_sol(path, actions, obstacles, sst_params, sim_params, callables):
     return True
 
 # 8192, 16384, 32768, 65536, 131072
-MAX_TREE_SIZE = 200000
-A = 128
-batch_size = 32768
+MAX_TREE_SIZE = 400000
+A = 16
+batch_size = 8192
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
-    parser.add_argument('--env', type=str, default='envs/tree.csv', help='Path to environment config.')
-    parser.add_argument('--motion', type=str, default='di', help='di, da, qc')
+    parser.add_argument('--env', type=str, default='envs/quadhouse.csv', help='Path to environment config.')
+    parser.add_argument('--motion', type=str, default='qc', help='di, da, qc')
     args = parser.parse_args()
 
     match args.motion:

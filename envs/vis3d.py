@@ -1,58 +1,65 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+import plotly.graph_objects as go
+import os
 
-def plot_cube(ax, dims, color='red', alpha=0.5):
-    """dims: [x1, y1, z1, x2, y2, z2]"""
-    x1, y1, z1, x2, y2, z2 = dims
-    
-    # Define the 8 vertices of the box
-    v = np.array([[x1, y1, z1], [x2, y1, z1], [x2, y2, z1], [x1, y2, z1],
-                  [x1, y1, z2], [x2, y1, z2], [x2, y2, z2], [x1, y2, z2]])
-    
-    # Define the 6 faces (each face is a list of 4 indices)
-    faces = [
-        [v[0], v[1], v[2], v[3]], # Bottom
-        [v[4], v[5], v[6], v[7]], # Top
-        [v[0], v[1], v[5], v[4]], # Side 1
-        [v[2], v[3], v[7], v[6]], # Side 2
-        [v[0], v[3], v[7], v[4]], # Side 3
-        [v[1], v[2], v[6], v[5]]  # Side 4
-    ]
-    
-    ax.add_collection3d(Poly3DCollection(faces, facecolors=color, linewidths=1, edgecolors='black', alpha=alpha))
-
-def visualize_obstacles(csv_path):
-    # Load data, skipping the first header row
+def visualize_obstacles_plotly_ssh(csv_path):
+    # Load data
     data = np.loadtxt(csv_path, delimiter=',', skiprows=1)
-    
-    # Handle single-row CSVs
     if data.ndim == 1:
         data = data.reshape(1, -1)
 
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
+    fig = go.Figure()
 
-    for box in data:
-        plot_cube(ax, box)
+    for i, box in enumerate(data):
+        x1, y1, z1, x2, y2, z2 = box
+        
+        # Logic to differentiate Floors/Walls from Furniture
+        volume = (x2-x1) * (y2-y1) * (z2-z1)
+        is_thin = (z2 - z1) < 0.05 or (x2 - x1) < 0.05 or (y2 - y1) < 0.05
+        
+        # Visual settings: Floors/Walls are light grey/transparent, Furniture is Red
+        color = 'lightgrey' if (is_thin or volume > 0.5) else 'red'
+        opacity = 0.2 if (is_thin or volume > 0.5) else 0.9
 
-    # Auto-scale axes based on the obstacle bounds
-    all_coords = data.reshape(-1, 3)
-    max_range = np.array([all_coords[:,0].max(), all_coords[:,1].max(), all_coords[:,2].max()]).max()
+        # Vertices and Triangles for a 3D Mesh Box
+        x = [x1, x1, x2, x2, x1, x1, x2, x2]
+        y = [y1, y2, y2, y1, y1, y2, y2, y1]
+        z = [z1, z1, z1, z1, z2, z2, z2, z2]
+        
+        # Standard triangulation for a cube
+        i_idx = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2]
+        j_idx = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
+        k_idx = [0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6]
+
+        fig.add_trace(go.Mesh3d(
+            x=x, y=y, z=z, i=i_idx, j=j_idx, k=k_idx,
+            opacity=opacity,
+            color=color,
+            flatshading=True,
+            lighting=dict(ambient=0.6, diffuse=1, roughness=0.1, specular=1, fresnel=2),
+            lightposition=dict(x=10, y=10, z=10)
+        ))
+
+    title = os.path.basename(csv_path).split('.')[0]
     
-    ax.set_xlim(0, max_range)
-    ax.set_ylim(0, max_range)
-    ax.set_zlim(0, max_range)
-    title = csv_path.split('/')[-1].split('.')[0]  # Extract filename without extension for title
+    fig.update_layout(
+        scene=dict(
+            xaxis_title='X', yaxis_title='Y', zaxis_title='Z',
+            aspectmode='data',
+            # Set a better default viewing angle for the save
+            camera=dict(eye=dict(x=1.5, y=1.5, z=1.2))
+        ),
+        margin=dict(l=0, r=0, b=0, t=0),
+        paper_bgcolor='white'
+    )
+
+    # Save to the specific directory your previous script used
+    output_path = f'envs/vis/{title}.png'
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    ax.set_title('Env: ' + title)
-    ax.view_init(elev=30, azim=60)
-    
-    plt.savefig('envs/vis/' + title + '.png')
+    # Scale=2 makes the PNG high-res
+    fig.write_html(output_path)
+    print(f"Successfully saved improved render to: {output_path}")
 
 if __name__ == "__main__":
-    # Ensure 'envs/tree.csv' or your specific filename is correct
-    visualize_obstacles('envs/house.csv')
+    visualize_obstacles_plotly_ssh('envs/house.csv')

@@ -481,7 +481,7 @@ if __name__ == "__main__":
     # To track the final result of each run for the global average
     run_summaries = []
 
-    p_gmm = 0.5
+    p_gmm = 0
     for run_id in range(N_RUNS):
         print(f"\n--- Starting Run {run_id+1}/{N_RUNS} ---")
         gc.collect() 
