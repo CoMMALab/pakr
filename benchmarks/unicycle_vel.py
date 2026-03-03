@@ -144,7 +144,7 @@ def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
     new_states = states_end[valid_idx]
     new_actions = actions[valid_idx]
     new_parents = parents[valid_idx]
-    new_costs = tree.costs[new_parents] + dist_traveled[valid_idx]
+    new_costs = tree.costs[new_parents] + 1
 
     tree, start_idx = rrtree.add_nodes(tree, new_states, new_actions, new_parents, new_costs, num_new)
     goal_mask = callables.goal_fn(new_states, sst_params.goal, sst_params.goal_radius)

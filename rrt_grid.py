@@ -183,13 +183,15 @@ def verify_sol(path, actions, obstacles, sst_params, sim_params, callables):
     return True
 
 # 8192, 16384, 32768, 65536, 131072
-MAX_TREE_SIZE = 400000
-A = 16
-batch_size = 8192
+MAX_TREE_SIZE = 1_000_000
+A = 128
+batch_size = 32768  # Must be a multiple of A for the tiered NN to work correctly
+dt = 0.2
+tte = 10
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
-    parser.add_argument('--env', type=str, default='envs/quadhouse.csv', help='Path to environment config.')
-    parser.add_argument('--motion', type=str, default='qc', help='di, da, qc')
+    parser.add_argument('--env', type=str, default='envs/tree.csv', help='Path to environment config.')
+    parser.add_argument('--motion', type=str, default='di', help='di, da, qc')
     args = parser.parse_args()
 
     match args.motion:
@@ -207,7 +209,9 @@ if __name__ == "__main__":
     sst_params = sst_params.replace(batch_size=batch_size)
     sim_params = sim_params.replace(batch_size=batch_size)
     obstacles = helper.get_obs(args.env)
-    
+    sim_params = sim_params.replace(dt=dt)
+    sst_params = sst_params.replace(time_to_evolve=tte)
+
     # Update global references for the JIT closure
     SIM_PARAMS_RESERVED = sim_params
     CALLABLES_RESERVED = callables
@@ -277,6 +281,7 @@ if __name__ == "__main__":
 
     print(f"\nbatch size: {sim_params.batch_size}, branch factor {A}")
     print(f"Average time over 100 runs: {jnp.mean(times)*1e3:.3f} ms, {jnp.mean(iters):.2f} iterations, size {jnp.mean(sizes):.2f}")
+    print(f"Median time over 100 runs: {jnp.median(times)*1e3:.3f} ms, {jnp.median(iters)} iterations, median size {jnp.median(sizes)}")
     print(f"min time over 100 runs: {jnp.min(times)*1e3:.3f} ms, {jnp.min(iters)} iterations, min size {jnp.min(sizes)}")
     print(f"max time over 100 runs: {jnp.max(times)*1e3:.3f} ms, {jnp.max(iters)} iterations, max size {jnp.max(sizes)}")
     print(f"Average cost over 100 runs: {jnp.mean(costs):.3f}, min cost: {jnp.min(costs):.3f}, max cost: {jnp.max(costs):.3f}")

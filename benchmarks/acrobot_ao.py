@@ -6,6 +6,7 @@ import time
 import rrtree
 import propagate
 import helper
+import gc
 from params import Bounds, Position, MotionConstraints, PhysicsConstants, MJXparams, SSTparams, Callables
 
 # ------------------------------------------------------------------
@@ -18,32 +19,27 @@ def propagate_acrobot(states, actions, dt, constants):
     states:  (B, 4) -> [theta1, theta2, dtheta1, dtheta2]
     actions: (B, 1) -> [torque] applied to joint 2 (elbow)
     """
-    # Standard Acrobot parameters
     l1, l2 = 1.0, 1.0
     m1, m2 = 1.0, 1.0
     lc1, lc2 = 0.5, 0.5
-    I1, I2 = 0.33, 0.33
+    I1, I2 = 0.2, 0.2
     g = 9.81
 
     theta1, theta2, dtheta1, dtheta2 = states[:, 0], states[:, 1], states[:, 2], states[:, 3]
     u = actions[:, 0]
 
-    # Mass Matrix components
     d11 = m1 * lc1**2 + m2 * (l1**2 + lc2**2 + 2 * l1 * lc2 * jnp.cos(theta2)) + I1 + I2
     d22 = m2 * lc2**2 + I2
     d12 = m2 * (lc2**2 + l1 * lc2 * jnp.cos(theta2)) + I2
     
-    # Coriolis and Gravity
     phi2 = m2 * lc2 * g * jnp.cos(theta1 + theta2 - jnp.pi/2)
     phi1 = -m2 * l1 * lc2 * dtheta2**2 * jnp.sin(theta2) \
            - 2 * m2 * l1 * lc2 * dtheta2 * dtheta1 * jnp.sin(theta2) \
            + (m1 * lc1 + m2 * l1) * g * jnp.cos(theta1 - jnp.pi/2) + phi2
 
-    # Accelerations
     accel2 = (u + d12 / d11 * phi1 - m2 * l1 * lc2 * dtheta1**2 * jnp.sin(theta2) - phi2) / (d22 - d12**2 / d11)
     accel1 = -(d12 * accel2 + phi1) / d11
 
-    # Integration
     new_dtheta1 = dtheta1 + accel1 * dt
     new_dtheta2 = dtheta2 + accel2 * dt
     new_theta1 = (theta1 + new_dtheta1 * dt + jnp.pi) % (2 * jnp.pi) - jnp.pi
@@ -53,10 +49,8 @@ def propagate_acrobot(states, actions, dt, constants):
 
 @jax.jit
 def dist_acrobot(sim_params, diff):
-    # diff: [dtheta1, dtheta2, ddtheta1, ddtheta2]
     dq = diff[..., 0:2]
     dv = diff[..., 2:4]
-    # Simple weighted Euclidean
     return (jnp.sum(dq**2, axis=-1) + 0.1 * jnp.sum(dv**2, axis=-1)).T
 
 @partial(jax.jit, static_argnums=(0,))
@@ -64,7 +58,7 @@ def sample_acrobot(sim_params, key):
     B = sim_params.batch_size
     k1, k2 = jax.random.split(key)
     angles = jax.random.uniform(k1, (B, 2), minval=-jnp.pi, maxval=jnp.pi)
-    vels = jax.random.uniform(k2, (B, 2), minval=-8.0, maxval=8.0)
+    vels = jax.random.uniform(k2, (B, 2), minval=-5.0, maxval=5.0)
     return jnp.concatenate([angles, vels], axis=-1)
 
 @partial(jax.jit, static_argnums=(0,))
@@ -75,92 +69,55 @@ def sample_actions_acrobot(sim_params, key):
 
 @jax.jit
 def reached_goal_acrobot(states, goal, radius):
-    # Goal angles: Vertically upright
     goal_angles = jnp.array([jnp.pi/2, 0.0])
-    
-    # 1. Calculate angular difference with wrapping
     diff_angles = states[:, 0:2] - goal_angles
     diff_angles = (diff_angles + jnp.pi) % (2 * jnp.pi) - jnp.pi
     angle_dist_sq = jnp.sum(diff_angles**2, axis=-1)
-    
-    # 2. Calculate velocity difference (relative to 0)
-    # We use a much larger tolerance or a separate check for velocity
     vel_dist_sq = jnp.sum(states[:, 2:4]**2, axis=-1)
-    
-    # Option A: Only check angles (Fly-by goal)
-    # return angle_dist_sq < radius**2
-
-    # Option B: Weighted check (Positions are 10x more important than stopping)
     return (angle_dist_sq + 0.1 * vel_dist_sq) < radius**2
 
 @partial(jax.jit, static_argnums=(1))
 def valid_acrobot(state, params, obstacles):
-    # Basic velocity clamping
     v = state[:, 2:4]
-    vel_ok = jnp.all(jnp.abs(v) < 8.0, axis=-1)
+    vel_ok = jnp.all(jnp.abs(v) < 5.0, axis=-1)
     return vel_ok
 
 # ------------------------------------------------------------------
-# UTILITIES
-# ------------------------------------------------------------------
-
-def extract_sol(tree, goal_mask, start_idx):
-    if jnp.sum(goal_mask) == 0:
-        print(tree.tree_size)
-        print("error: no goal reached")
-        return None, None
-    
-    #print(jnp.sum(goal_mask))
-
-    goal_idxs = jnp.argmax(goal_mask)
-    goal_idx = goal_idxs + start_idx
-    path = []
-    actions = []
-    while goal_idx != -1:
-        path.append(tree.states[goal_idx])
-        actions.append(tree.actions[goal_idx])
-        goal_idx = tree.parents[goal_idx]
-    return jnp.array(path[::-1]), jnp.array(actions[::-1])
-
-def verify_sol(path, actions, obstacles, sst_params, sim_params, callables):
-    if path is None: return False
-    for i in range(len(actions)-1):
-        start = path[i][None, :]
-        action = actions[i+1][None, :]
-        states_end, valid_mask, _ = propagate.rollout_final_2d(
-            start, action, obstacles, sst_params, sim_params, callables
-        )
-        if not valid_mask: return False
-    return True
-
-# ------------------------------------------------------------------
-# PLANNER SETUP
+# AO-RRT LOGIC
 # ------------------------------------------------------------------
 
 MAX_TREE_SIZE = 500000
-TIERS = [512, 1024, 4096, 16384, 32768, 50000]
+TIERS = [512, 1024, 4096, 16384, 32768, 64536, 100000, 250000, 500000]
 SIM_PARAMS_RESERVED = None
 CALLABLES_RESERVED = None
 
 def nn_tier_factory(size):
     def nn_fn(operands):
         states, tree_size, query = operands
-        return helper.nearest_neighbor_masked(
+        sliced_states = states[:size]
+        parents, _ = helper.nearest_neighbor_masked(
             SIM_PARAMS_RESERVED, CALLABLES_RESERVED.dist_fn, 
-            states[:size], tree_size, query
-        )[0]
+            sliced_states, tree_size, query
+        )
+        return parents
     return nn_fn
 
 NN_BRANCHES = [nn_tier_factory(t) for t in TIERS]
 
 @partial(jax.jit, static_argnums=(3, 4, 5))
-def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
+def aorrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables, best_cost):
     B = sim_params.batch_size
+    A = 32
     K = B // A 
     rng_key, subkey1, subkey2 = jax.random.split(rng_key, 3)
     seed_pts = callables.sample_fn(sim_params, subkey1)[:K]
-    branch_idx = jnp.minimum(jnp.digitize(tree.tree_size, jnp.array(TIERS)), len(TIERS) - 1)
-    parents_small = jax.lax.switch(branch_idx, NN_BRANCHES, (tree.states, tree.tree_size, seed_pts)) 
+
+    branch_idx = jnp.digitize(tree.tree_size, jnp.array(TIERS))
+    branch_idx = jnp.minimum(branch_idx, len(TIERS) - 1)
+
+    operands = (tree.states, tree.tree_size, seed_pts)
+    parents_small = jax.lax.switch(branch_idx, NN_BRANCHES, operands) 
+    
     start_states = jnp.repeat(tree.states[parents_small], A, axis=0) 
     parents = jnp.repeat(parents_small, A, axis=0) 
     actions = callables.sampact_fn(sim_params, subkey2)
@@ -169,32 +126,39 @@ def rrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables):
         start_states, actions, obstacles, sst_params, sim_params, callables
     )
 
-    valid_mask = valid_mask.at[-1].set(False)
-    num_new = jnp.sum(valid_mask)
-    valid_idx = jnp.nonzero(valid_mask, size=B, fill_value=-1)[0]
+    # AO-Pruning: f(n) = g(n) + h(n)
+    # admissible heuristic for Acrobot: angular distance to vertical
+    new_costs = tree.costs[parents] + 0.15
+    goal_angles = jnp.array([jnp.pi/2, 0.0])
+    diff_angles = (states_end[:, 0:2] - goal_angles + jnp.pi) % (2 * jnp.pi) - jnp.pi
+    h = jnp.linalg.norm(diff_angles, axis=-1) 
+    
+    ao_mask = (new_costs + h <= best_cost) & valid_mask
+    ao_mask = ao_mask.at[-1].set(False)
 
-    tree, start_idx = rrtree.add_nodes(
-        tree, states_end[valid_idx], actions[valid_idx], 
-        parents[valid_idx], tree.costs[parents[valid_idx]] + 0.15, num_new
-    )
-    goal_mask = callables.goal_fn(states_end[valid_idx], sst_params.goal, sst_params.goal_radius)
-    return tree, rng_key, goal_mask, jnp.sum(goal_mask), states_end[valid_idx], start_idx
+    num_new = jnp.sum(ao_mask)
+    ao_idx = jnp.nonzero(ao_mask, size=B, fill_value=-1)[0]
+
+    tree, start_idx = rrtree.add_nodes(tree, states_end[ao_idx], actions[ao_idx], parents[ao_idx], new_costs[ao_idx], num_new)
+    goal_mask = callables.goal_fn(states_end[ao_idx], sst_params.goal, sst_params.goal_radius)
+    return tree, rng_key, goal_mask, jnp.sum(goal_mask), states_end[ao_idx], start_idx
 
 @partial(jax.jit, static_argnums=(1, 2, 3))
-def jit_while(tree, sst_params, sim_params, callables, obstacles, i):
+def jit_while(tree, sst_params, sim_params, callables, obstacles, best_cost, i):
     def body_fn(carry):
         tree, key, goal_mask, goal, states, start_idx, iter = carry
-        tree, key, goal_mask, goal, states, start_idx = rrt_iteration(
-            tree, key, obstacles, sst_params, sim_params, callables
+        key, subkey = jax.random.split(key)
+        tree, subkey, goal_mask, goal, states, start_idx = aorrt_iteration(
+            tree, subkey, obstacles, sst_params, sim_params, callables, best_cost
         )
         return (tree, key, goal_mask, goal, states, start_idx, iter + 1)
 
     def cond_fn(carry):
-        tree, _, _, goal, _, _, _ = carry
+        tree, key, goal_mask, goal, states, start_idx, iter = carry
         return (goal == 0) & (tree.tree_size < MAX_TREE_SIZE - sim_params.batch_size)
 
     init_carry = (tree, jax.random.PRNGKey(i), jnp.zeros(sim_params.batch_size, dtype=bool),
-                  jnp.array(0, dtype=jnp.int32), jnp.zeros([sim_params.batch_size, sim_params.dims]),
+                  jnp.array(0, dtype=jnp.int32), jnp.zeros([sim_params.batch_size, sim_params.dims], dtype=jnp.float32),
                   jnp.array(0, dtype=jnp.int32), jnp.array(0, dtype=jnp.int32))
 
     tree, key, goal_mask, goal, states, start_idx, iter = jax.lax.while_loop(cond_fn, body_fn, init_carry)
@@ -217,9 +181,9 @@ if __name__ == "__main__":
 
     sst_params = SSTparams(
         batch_size=batch_size, δBN=0.1, δs=0.05, decay=0.8,
-        start=Position(x=-jnp.pi/2, y=0.0, z=0.0), # theta1 = -pi/2 (down)
-        goal=Position(x=jnp.pi/2, y=0.0, z=0.0),    # theta1 = pi/2 (up)
-        goal_radius=0.15, time_to_evolve=1,
+        start=Position(x=-jnp.pi/2, y=0.0, z=0.0), 
+        goal=Position(x=jnp.pi/2, y=0.0, z=0.0),    
+        goal_radius=0.2, time_to_evolve=3,
     )
 
     callables = Callables(
@@ -230,39 +194,50 @@ if __name__ == "__main__":
     SIM_PARAMS_RESERVED, CALLABLES_RESERVED = sim_params, callables
     obstacles = jnp.array([])
 
-    print("\nStarting Acrobot RRT - Pre-compiling...")
+    print("\nStarting Acrobot AO-RRT - Warm-up...")
     dummy_tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.dims, sim_params.action_dims)
-    _ = jit_while(dummy_tree, sst_params, sim_params, callables, obstacles, 0)
-    print("Compilation complete.\n")
+    _ = jit_while(dummy_tree, sst_params, sim_params, callables, obstacles, jnp.inf, 0)
+    print("Warm-up complete.")
 
-    times, iters, sizes, costs = [], [], [], []
+    N_RUNS, MAX_TIME, COST_THRESHOLD = 100, 5.0, 10
+    run_summaries = []
 
-    for i in range(100):
-
+    for run_id in range(N_RUNS):
+        gc.collect()
         tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.dims, sim_params.action_dims)
+        init_state = jnp.array([sst_params.start.x, sst_params.start.y, 0.0, 0.0], dtype=jnp.float32)
+        tree, _ = rrtree.add_nodes(tree, init_state, jnp.zeros(sim_params.action_dims), -1, 0.0, 1)
         
-        # UPDATED INIT STATE: [theta1, theta2, dtheta1, dtheta2]
-        init_state = jnp.array([sst_params.start.x, sst_params.start.y, 0.0, 0.0])
-        tree, _ = rrtree.add_nodes(tree, init_state, jnp.zeros(1), -1, 0.0, 1)
+        best_cost, t0, ao_iter = float('inf'), time.perf_counter(), 0
         
-        start_p = time.perf_counter()
-        result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
-        tree, key, goal_mask, goal_found, states, start_idx, iter_val, size = jax.block_until_ready(result)
-        timer = time.perf_counter() - start_p
+        while True:
+            rnd = np.random.randint(0, 2**31 - 1)
+            tree, key, goal_mask, goal, states, start_idx, iters, size = jit_while(
+                tree, sst_params, sim_params, callables, obstacles, jnp.array(best_cost, dtype=jnp.float32), rnd
+            )
 
+            if goal > 0:
+                sol_cost = float(tree.costs[start_idx + jnp.argmax(goal_mask)])
+                if sol_cost < best_cost: 
+                    best_cost = sol_cost
 
-        path, actions = extract_sol(tree, goal_mask, start_idx)
-        is_valid = verify_sol(path, actions, obstacles, sst_params, sim_params, callables)
-        
-        if not is_valid:
-            print(f"Run {i}: Found path but verification failed!")
+            elapsed = time.perf_counter() - t0
+            ao_iter += 1
+            
+            # Termination: Time limit, Cost threshold, or Tree Full
+            if elapsed >= MAX_TIME or best_cost <= COST_THRESHOLD or tree.tree_size >= MAX_TREE_SIZE - batch_size:
+                run_summaries.append({
+                    "cost": best_cost if best_cost != float('inf') else None, 
+                    "time": elapsed, 
+                    "nodes": int(tree.tree_size), 
+                    "iters": ao_iter
+                })
+                print(f"Run {run_id+1}: Cost: {best_cost:.4f} | Time: {elapsed:.2f}s | Nodes: {tree.tree_size}")
+                break
 
-        cost = tree.costs[jnp.argmax(goal_mask) + start_idx]
-        costs.append(cost); times.append(timer); iters.append(iter_val); sizes.append(size)
-        print(f"Run {i:02d}: Goal reached! Iters: {iter_val}, Time: {timer*1e3:.2f}ms, Cost: {cost:.3f}")
-
-    # Statistics (Consistent with original script)
-    times, iters, sizes, costs = jnp.array(times), jnp.array(iters), jnp.array(sizes), jnp.array(costs)
-    print(f"\nAverage time over {len(times)} runs: {jnp.mean(times)*1e3:.3f} ms, {jnp.mean(iters):.2f} iterations, size {jnp.mean(sizes):.2f}")
-    print(f"min time: {jnp.min(times)*1e3:.3f} ms, max time: {jnp.max(times)*1e3:.3f} ms")
-    print(f"Average cost: {jnp.mean(costs):.3f}, min cost: {jnp.min(costs):.3f}, max cost: {jnp.max(costs):.3f}")
+    # Stats Calculation
+    valid_costs = [s['cost'] for s in run_summaries if s['cost'] is not None]
+    if valid_costs:
+        print("\n" + "="*30 + f"\nGLOBAL STATS (N={N_RUNS})\n" + "="*30)
+        print(f"Success Rate: {(len(valid_costs)/N_RUNS)*100:.1f}%")
+        print(f"Avg Cost: {np.average(valid_costs):.4f} | Avg Time: {np.average([s['time'] for s in run_summaries]):.3f}s")

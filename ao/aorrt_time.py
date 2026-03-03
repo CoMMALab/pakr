@@ -262,7 +262,7 @@ if __name__ == "__main__":
     # --- Configuration ---
     N_RUNS = 100
     MAX_TIME = 3.0       
-    COST_THRESHOLD = 3
+    COST_THRESHOLD = 4
     GT_MIN_COST = 1.48    
     all_run_data = []
 
