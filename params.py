@@ -215,7 +215,7 @@ sim_params_DI = MJXparams(
     bounds = Bounds(),
     dims=6,
     action_dims=3,
-    dt = 0.05,
+    dt = 0.1,
     seed = seed
 )
 
@@ -226,7 +226,7 @@ sim_params_DA = MJXparams(
     bounds = Bounds(),
     dims=6,
     action_dims=3,
-    dt = 0.05,
+    dt = 0.1,
     seed = seed
 )
 

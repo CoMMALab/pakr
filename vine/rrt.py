@@ -289,6 +289,75 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, i):
 # EXECUTION
 # ------------------------------------------------------------------
 
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import numpy as np
+
+def visualize_tree(tree, obstacles, sst_params, sim_params, iteration, num_samples=50):
+    """Visualizes the RRT tree with full vine bodies, assuming tip_length = 0."""
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # 1. Draw Obstacles
+    for obs in obstacles:
+        x1, y1, x2, y2 = obs
+        width, height = x2 - x1, y2 - y1
+        ax.add_patch(patches.Rectangle((x1, y1), width, height, 
+                                     color='gray', alpha=0.5, zorder=1))
+
+    # 2. Extract Data from Tree
+    valid_size = tree.tree_size
+    # states: [tip_x, tip_y, tip_theta, 30_angles, n_bodies, time]
+    active_states = np.array(tree.states[:valid_size])
+    
+    # Randomly sample to avoid over-cluttering
+    sample_indices = np.random.choice(valid_size, min(num_samples, valid_size), replace=False)
+    
+    for idx in sample_indices:
+        state = active_states[idx]
+        
+        # Based on your 35-dim description:
+        # [0:3] -> Tip Pose
+        # [3:33] -> 30 Bending Angles (Minimal Coordinates)
+        # [33] -> n_bodies
+        # [34] -> time
+        angles = state[3:33] 
+        n_bodies = int(state[33])
+        
+        curr_x, curr_y = sst_params.start.x, sst_params.start.y
+        curr_h = sst_params.start.z # Initial heading/theta
+        
+        xs, ys = [curr_x], [curr_y]
+        
+        # Forward Kinematics: Iterate through active segments
+        # min(n_bodies, 30) ensures we never hit index 30
+        for i in range(min(n_bodies, 30)):
+            angle = angles[i]
+            curr_h += angle
+            curr_x += sim_params.body_length * np.cos(curr_h)
+            curr_y += sim_params.body_length * np.sin(curr_h)
+            xs.append(curr_x)
+            ys.append(curr_y)
+            
+        # Plot the skeleton of the vine
+        ax.plot(xs, ys, color='royalblue', alpha=0.3, linewidth=1, zorder=2)
+
+    # 3. Plot Tip Points and Goal
+    ax.scatter(active_states[:, 0], active_states[:, 1], s=2, c='blue', alpha=0.6, zorder=3)
+    ax.scatter(sst_params.start.x, sst_params.start.y, color='green', s=100, marker='*', zorder=5)
+    
+    goal_circle = patches.Circle((sst_params.goal.x, sst_params.goal.y), sst_params.goal_radius, 
+                                 color='red', fill=False, linestyle='--', zorder=5)
+    ax.add_patch(goal_circle)
+
+    # Formatting
+    ax.set_title(f"Vine RRT - Iteration {iteration} (Size: {valid_size})")
+    ax.set_xlim(sst_params.min_x, sst_params.max_x)
+    ax.set_ylim(sst_params.min_y, sst_params.max_y)
+    ax.set_aspect('equal')
+    
+    plt.savefig(f"rrt_iter_{iteration:02d}.png", dpi=150)
+    plt.close()
+    print(f"Saved rrt_iter_{iteration:02d}.png")
 
 from flax import struct
 import jax.numpy as jnp
@@ -322,7 +391,7 @@ class SSTparams:
     time_to_evolve: int = 100
 
 if __name__ == "__main__":
-    cfg = load_box_config('vine/envs/env_free.txt')
+    cfg = load_box_config('vine/envs/env_live.txt')
 
     batch_size = 128
     A = 2
@@ -373,35 +442,53 @@ if __name__ == "__main__":
     init_state = init_state.at[0].set(sst_params.start.x) # n_bodies = 0
     init_state = init_state.at[1].set(sst_params.start.y)
     init_state = init_state.at[2].set(sst_params.start.z)
-
-
-    dummy_tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.max_bodies)
-    tree, _ = rrtree.add_nodes(dummy_tree, init_state, jnp.zeros((sim_params.max_bodies, 2)), -1, 0.0, 1)
-    print("\nStarting Vine RRT - Pre-compiling...")
-
-    _ = jit_while(dummy_tree, sst_params, sim_params, callables, obstacles, 0)
-    print("Compilation complete.\n")
-
-    times, iters, sizes, costs = [], [], [], []
-
+    tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.max_bodies)
+    tree, _ = rrtree.add_nodes(tree, init_state, jnp.zeros((sim_params.max_bodies, 2)), -1, 0.0, 1)
+    
+    rng_key = jax.random.PRNGKey(42)
+    
+    print(f"Starting 10 iterations of RRT...")
     for i in range(10):
-
-        tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.max_bodies)
-        tree, _ = rrtree.add_nodes(tree, init_state, jnp.zeros((sim_params.max_bodies, 2)), -1, 0.0, 1)
+        # Run a single batch iteration
+        tree, rng_key, goal_mask, goal_count, states_end, start_idx = rrt_iteration(
+            tree, rng_key, obstacles, sst_params, sim_params, callables
+        )
         
-        start_p = time.perf_counter()
-        result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
-        tree, key, goal_mask, goal_found, states, start_idx, iter_val, size = jax.block_until_ready(result)
-        timer = time.perf_counter() - start_p
+        # Block to ensure JAX finished the iteration before we plot
+        tree = jax.block_until_ready(tree)
+        
+        # Save visualization
+        visualize_tree(tree, obstacles, sst_params, sim_params, i + 1)
+        
+        if goal_count > 0:
+            print(f"Goal found at iteration {i+1}!")
+    # dummy_tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.max_bodies)
+    # tree, _ = rrtree.add_nodes(dummy_tree, init_state, jnp.zeros((sim_params.max_bodies, 2)), -1, 0.0, 1)
+    # print("\nStarting Vine RRT - Pre-compiling...")
 
-        if goal_found:
-            print(f"tree_size={size}, iters={iter_val}, time={timer:.3f}s")
-        cost = tree.costs[jnp.argmax(goal_mask) + start_idx]
-        costs.append(cost); times.append(timer); iters.append(iter_val); sizes.append(size)
-        print(f"Run {i:02d}: Goal reached! Iters: {iter_val}, Time: {timer*1e3:.2f}ms, Cost: {cost:.3f}")
+    # _ = jit_while(dummy_tree, sst_params, sim_params, callables, obstacles, 0)
+    # print("Compilation complete.\n")
 
-    # Statistics (Consistent with original script)
-    times, iters, sizes, costs = jnp.array(times), jnp.array(iters), jnp.array(sizes), jnp.array(costs)
-    print(f"\nAverage time over {len(times)} runs: {jnp.mean(times)*1e3:.3f} ms, {jnp.mean(iters):.2f} iterations, size {jnp.mean(sizes):.2f}")
-    print(f"min time: {jnp.min(times)*1e3:.3f} ms, max time: {jnp.max(times)*1e3:.3f} ms")
-    print(f"Average cost: {jnp.mean(costs):.3f}, min cost: {jnp.min(costs):.3f}, max cost: {jnp.max(costs):.3f}")
+    # times, iters, sizes, costs = [], [], [], []
+
+    # for i in range(1):
+
+    #     tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.max_bodies)
+    #     tree, _ = rrtree.add_nodes(tree, init_state, jnp.zeros((sim_params.max_bodies, 2)), -1, 0.0, 1)
+        
+    #     start_p = time.perf_counter()
+    #     result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
+    #     tree, key, goal_mask, goal_found, states, start_idx, iter_val, size = jax.block_until_ready(result)
+    #     timer = time.perf_counter() - start_p
+
+    #     if goal_found:
+    #         print(f"tree_size={size}, iters={iter_val}, time={timer:.3f}s")
+    #     cost = tree.costs[jnp.argmax(goal_mask) + start_idx]
+    #     costs.append(cost); times.append(timer); iters.append(iter_val); sizes.append(size)
+    #     print(f"Run {i:02d}: Goal reached! Iters: {iter_val}, Time: {timer*1e3:.2f}ms, Cost: {cost:.3f}")
+
+    # # Statistics (Consistent with original script)
+    # times, iters, sizes, costs = jnp.array(times), jnp.array(iters), jnp.array(sizes), jnp.array(costs)
+    # print(f"\nAverage time over {len(times)} runs: {jnp.mean(times)*1e3:.3f} ms, {jnp.mean(iters):.2f} iterations, size {jnp.mean(sizes):.2f}")
+    # print(f"min time: {jnp.min(times)*1e3:.3f} ms, max time: {jnp.max(times)*1e3:.3f} ms")
+    # print(f"Average cost: {jnp.mean(costs):.3f}, min cost: {jnp.min(costs):.3f}, max cost: {jnp.max(costs):.3f}")

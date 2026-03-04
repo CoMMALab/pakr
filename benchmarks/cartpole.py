@@ -276,5 +276,5 @@ if __name__ == "__main__":
 
     # Statistics (Consistent with original script)
     times, iters, sizes = jnp.array(times), jnp.array(iters), jnp.array(sizes)
-    print(f"\nAverage time over {len(times)} runs: {jnp.mean(times)*1e3:.3f} ms, {jnp.mean(iters):.2f} iterations, size {jnp.mean(sizes):.2f}")
+    print(f"\nAverage time over {len(times)} runs: {jnp.median(times)*1e3:.3f} ms, {jnp.mean(iters):.2f} iterations, size {jnp.mean(sizes):.2f}")
     print(f"min time: {jnp.min(times)*1e3:.3f} ms, max time: {jnp.max(times)*1e3:.3f} ms")

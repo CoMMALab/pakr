@@ -34,7 +34,7 @@ def nn_tier_factory(size):
     return nn_fn
 
 # Define memory buckets
-TIERS = [512, 1024, 4096, 16384, 32768, 64536, 200000]
+TIERS = [512, 1024, 4096, 16384, 32768, 64536, 131_072, 262_144, 500_000, 1_000_000, 2_000_000]
 NN_BRANCHES = [nn_tier_factory(t) for t in TIERS]
 
 
@@ -52,7 +52,7 @@ def aorrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables,
     3. AO-Pruning (f-cost < best_cost)
     """
     B = sim_params.batch_size
-    A = 32            # Actions per parent
+    A = 16           # Actions per parent
     K = B // A         # Number of unique NN queries
     
     rng_key, subkey1, subkey2 = jax.random.split(rng_key, 3)
@@ -163,11 +163,11 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, best_cost, i):
     tree, key, goal_mask, goal, states, start_idx, iter = jax.lax.while_loop(cond_fn, body_fn, init_carry)
     return tree, key, goal_mask, goal, states, start_idx, iter, tree.tree_size
 
-MAX_TREE_SIZE = 200000
+MAX_TREE_SIZE = 2_000_000
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
-    parser.add_argument('--env', type=str, default='envs/quadhouse.csv', help='Path to the environment config file.')
-    parser.add_argument('--motion', type=str, default='qc', help='Define motion type: Double Integrator (di), Dubins Airplane (da), Quadcopter (qc), Mjx Cartpole (mcp)')
+    parser.add_argument('--env', type=str, default='envs/tree.csv', help='Path to the environment config file.')
+    parser.add_argument('--motion', type=str, default='di', help='Define motion type: Double Integrator (di), Dubins Airplane (da), Quadcopter (qc), Mjx Cartpole (mcp)')
     args = parser.parse_args()
 
     match args.motion:
@@ -183,6 +183,9 @@ if __name__ == "__main__":
             sst_params = params.sst_params_QC
             sim_params = params.sim_params_QC
             callables = params.callables_QC
+            
+            # sst_params = sst_params.replace(start=params.Position(50, 10, 50))
+            # sst_params = sst_params.replace(goal=params.Position(50, 90, 50))
         # case 'mcp':
         #     sst_params = params.sst_params_DI
         #     sim_params = params.sim_params_DI
@@ -288,20 +291,19 @@ if __name__ == "__main__":
     import gc
 
     # --- Configuration ---
-    N_RUNS = 100
+    # --- Configuration ---
+    N_RUNS = 102  # 101 total to get 100 after excluding Run 0
     MAX_TIME = 3.0       
-    COST_THRESHOLD = 400
+    COST_THRESHOLD = 1.55
     GT_MIN_COST = 1.403  
     all_run_data = []
-
-    # To track the final result of each run for the global average
     run_summaries = []
 
     for run_id in range(N_RUNS):
-        print(f"\n--- Starting Run {run_id+1}/{N_RUNS} ---")
+        print(f"\n--- Starting Run {run_id}/{N_RUNS-1} ---")
         gc.collect() 
         
-        # Initialize Tree & Root (Reset for each run)
+        # Reset Tree for each run
         tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
         tree = jax.device_put(tree)
         init_state = jnp.concatenate([
@@ -315,13 +317,8 @@ if __name__ == "__main__":
         t0 = time.perf_counter()
         
         while True:
-            
-            
-
             rnd = np.random.randint(0, 2**31 - 1)
             
-            # Call the JIT function
-            # Ensure best_cost is passed as a JAX array to prevent recompilation
             tree, key, goal_mask, goal, states, start_idx, iters, size = jit_while(
                 tree, sst_params, sim_params, callables, obstacles,
                 jnp.array(best_cost, dtype=jnp.float32), rnd
@@ -334,6 +331,8 @@ if __name__ == "__main__":
                     best_cost = sol_cost
 
             elapsed = time.perf_counter() - t0
+            
+            # Record data
             all_run_data.append({
                 "Run": run_id,
                 "Iteration": ao_iter,
@@ -342,137 +341,124 @@ if __name__ == "__main__":
             })
             
             ao_iter += 1
-            # Quick print for progress
-            # if ao_iter % 5 == 0: # Print every 5 iters to keep console clean
-            #     print(f"  Iter {ao_iter:02d} | Cost: {best_cost:.4f} | Nodes: {size}")
-            # Exit conditions
             if elapsed >= MAX_TIME or best_cost <= COST_THRESHOLD:
-                # Capture the final state of this run before breaking
-                if run_id > 0:
+                # Exclude Run 0 from the summary statistics
+                if run_id > 1:
                     run_summaries.append({
                         "cost": best_cost if best_cost != float('inf') else None,
                         "time": elapsed,
                         "nodes": int(tree.tree_size),
                         "iters": ao_iter
                     })
-                print(f"Run {run_id+1} Finished | Final Cost: {best_cost:.4f} | Time: {elapsed:.2f}s | iters: {ao_iter} | nodes: {tree.tree_size}")
+                print(f"Run {run_id} Finished | Final Cost: {best_cost:.4f} | Time: {elapsed:.2f}s")
                 break
 
-            tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
-            tree = jax.device_put(tree)
-            tree, _ = rrtree.add_nodes(tree, init_state, jnp.zeros(sim_params.action_dims), -1, 0.0, 1)
-            
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    import numpy as np
+    from matplotlib.ticker import FormatStrFormatter
 
-    # --- Calculate and Print Final Averages (With Outlier Removal) ---
-    
-    # 1. Filter for valid costs first
-    valid_summaries = [s for s in run_summaries if s['cost'] is not None]
-    
-    if valid_summaries:
-        costs = np.array([s['cost'] for s in valid_summaries])
-        
-        # Calculate Mean and Std Dev
-        mean_cost = np.mean(costs)
-        std_cost = np.std(costs)
-        
-        # Define bounds (2x standard deviation)
-        lower_bound = mean_cost - 2 * std_cost
-        upper_bound = mean_cost + 2 * std_cost
-        
-        # 2. Filter out the outliers
-        # filtered_summaries = [
-        #     s for s in valid_summaries 
-        #     if lower_bound <= s['cost'] <= upper_bound
-        # ]
-        filtered_summaries = valid_summaries  # No outlier removal as requested
-        # Calculate final stats from filtered data
-        final_costs = [s['cost'] for s in filtered_summaries]
-        final_times = [s['time'] for s in filtered_summaries]
-        final_nodes = [s['nodes'] for s in filtered_summaries]
-        final_iters = [s['iters'] for s in filtered_summaries]
-        
-        avg_cost = np.median(final_costs)
-        avg_time = np.median(final_times)
-        avg_nodes = np.median(final_nodes)
-        avg_iters = np.median(final_iters)
-        outliers_removed = len(valid_summaries) - len(filtered_summaries)
-    else:
-        avg_cost = float('inf')
-        avg_time = np.median([s['time'] for s in run_summaries])
-        avg_nodes = np.median([s['nodes'] for s in run_summaries])
-        outliers_removed = 0
+    # 1. Setup Styling
+    sns.set_theme(style="whitegrid", font="sans-serif", font_scale=1.1)
+    custom_palette = ["#3498db", "#2ecc71"] # Professional Blue/Green
 
-    success_rate = (len(valid_summaries) / N_RUNS) * 100
-
-    print("\n" + "="*30)
-    print("      GLOBAL STATISTICS (Filtered)")
-    print("="*30)
-    print(f"Total Runs:        {N_RUNS}")
-    print(f"Success Rate:      {success_rate:.1f}%")
-    print(f"Outliers Removed:  {outliers_removed} (outside 2σ)")
-    print(f"Avg Best Cost:     {avg_cost:.4f}")
-    print(f"Avg Run Time:      {avg_time:.3f}s")
-    print(f"Avg Tree Size:     {avg_nodes:.0f} nodes")
-    print(f"Avg Iterations:    {avg_iters:.1f} iters")
-    print("="*30)
-
-    # --- Data Processing (No Outlier Removal) ---
+    # 2. Data Preparation (Excluding Run 0)
     df = pd.DataFrame(all_run_data)
-    
-    # Filter out the first iteration (Run Warm-up/Initial state) as requested
-    df = df[df['Iteration'] > 0].copy()
-    
-    # Drop rows where no solution was found yet
+    df = df[df['Run'] > 0].copy()
     df = df.dropna(subset=["Best Cost"])
 
-    # Define helper for Quantiles
-    def q1(x): return x.quantile(0.25)
-    def q3(x): return x.quantile(0.75)
+    # 3. LOCF Normalization
+    max_iters = int(df['Iteration'].max())
+    time_grid = np.linspace(0, 1.0, 100) # Hard cutoff at 1.0 second
+    iter_grid = np.linspace(0, max_iters, 100).astype(int)
 
-    # 1. Group by Iteration
-    iter_stats = df.groupby('Iteration')['Best Cost'].agg(['median', q1, q3]).reset_index()
-    
-    # 2. Group by Time Bins (To make Time vs Cost readable)
-    # We create 20 discrete time bins to calculate medians/quartiles
-    df['Time_Bin'] = pd.cut(df['Cumulative Time'], bins=20)
-    df['Time_Mid'] = df['Time_Bin'].apply(lambda x: x.mid).astype(float)
-    time_stats = df.groupby('Time_Mid')['Best Cost'].agg(['median', q1, q3]).reset_index()
+    def prepare_seaborn_data(grid, col_name):
+        normalized_rows = []
+        for r in df['Run'].unique():
+            run_subset = df[df['Run'] == r].sort_values(col_name)
+            for val in grid:
+                past = run_subset[run_subset[col_name] <= val]
+                if not past.empty:
+                    normalized_rows.append({
+                        col_name: val,
+                        'Best Cost': past['Best Cost'].iloc[-1],
+                        'Run': r
+                    })
+        return pd.DataFrame(normalized_rows)
 
-    # --- Visualization ---
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    print("Normalizing data for linear plots...")
+    df_time_sns = prepare_seaborn_data(time_grid, 'Cumulative Time')
+    df_iter_sns = prepare_seaborn_data(iter_grid, 'Iteration')
 
-    # Graph 1: Iteration vs Cost (Median + Interquartile Range)
-    ax1.errorbar(
-        iter_stats['Iteration'], iter_stats['median'],
-        yerr=[iter_stats['median'] - iter_stats['q1'], iter_stats['q3'] - iter_stats['median']],
-        fmt='o', color='dodgerblue', ecolor='lightskyblue', capsize=3, elinewidth=1, 
-        label="Median Cost (IQR)"
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import FormatStrFormatter
+    import numpy as np
+
+    # 1. Setup Styling
+    sns.set_theme(style="whitegrid", font="sans-serif", font_scale=1.0)
+    custom_palette = ["#3498db"] 
+
+    def save_refined_plot(data, x_col, title, x_label, filename, x_limit=None):
+        # Set a squashed, columnar-friendly size (Width=5, Height=4)
+        fig, ax = plt.subplots(figsize=(5, 4))
+        
+        # Plotting
+        sns.lineplot(
+            data=data, x=x_col, y='Best Cost', 
+            ax=ax, color=custom_palette[0], 
+            errorbar=("pi", 50), estimator='median', lw=2.5,
+            label='Median Cost (IQR)'
+        )
+        
+        # Threshold Line
+        ax.axhline(y=COST_THRESHOLD, color='#e74c3c', ls='--', lw=2, label='Target Threshold')
+        
+        # --- DYNAMIC Y-AXIS CROPPING ---
+        stats_q3 = data.groupby(x_col)['Best Cost'].quantile(0.75)
+        max_q3 = stats_q3.max()
+        # Round up to the nearest 0.1 to cut off dead space
+        y_top = np.ceil(max_q3 * 10) / 10
+        y_bottom = data['Best Cost'].min() * 0.98
+        ax.set_ylim(y_bottom, y_top)
+        
+        # --- AESTHETICS ---
+        ax.set_title(title, pad=15, fontsize=12, fontweight='bold')
+        ax.set_xlabel(x_label, fontsize=10)
+        ax.set_ylabel("Best Cost Found", fontsize=10)
+        
+        ax.set_yscale('linear')
+        ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+        
+        if x_limit:
+            ax.set_xlim(0, x_limit)
+        
+        sns.despine(ax=ax, left=True, bottom=True)
+        ax.legend(frameon=True, facecolor='white', loc='upper right', fontsize='small')
+
+        # Save with tight bounding box for document insertion
+        plt.tight_layout()
+        plt.savefig(f"ao/{filename}", dpi=800, bbox_inches='tight')
+        plt.close(fig) # Close to free memory
+        print(f"Saved: ao/{filename}")
+
+    # --- Execute Individual Saves ---
+    # Save Iteration Plot
+    save_refined_plot(
+        df_iter_sns, 
+        'Iteration', 
+        "Cost Convergence over Iterations", 
+        "Iteration", 
+        "aorrt_iterations_col_155.png"
     )
-    ax1.axhline(y=GT_MIN_COST, color='red', linestyle='--', label=f'GT Min ({GT_MIN_COST})')
-    ax1.set_title(f"Cost vs. Iterations (N={N_RUNS})")
-    ax1.set_xlabel("Iteration")
-    ax1.set_ylabel("Best Cost")
-    ax1.grid(True, alpha=0.2)
-    ax1.legend()
 
-    # Graph 2: Time vs Cost (Median + Interquartile Range)
-    ax2.errorbar(
-        time_stats['Time_Mid'], time_stats['median'],
-        yerr=[time_stats['median'] - time_stats['q1'], time_stats['q3'] - time_stats['median']],
-        fmt='o', color='forestgreen', ecolor='honeydew', capsize=3, elinewidth=1, 
-        label="Median Cost (IQR)"
+    # Save Time Plot (Hard cutoff at 1.0s)
+    save_refined_plot(
+        df_time_sns, 
+        'Cumulative Time', 
+        "Cost Convergence over Time", 
+        "Time (seconds)", 
+        "aorrt_time_col_155.png", 
+        x_limit=0.1
     )
-    ax2.axhline(y=GT_MIN_COST, color='red', linestyle='--', label=f'GT Min ({GT_MIN_COST})')
-    ax2.set_title("Cost vs. Cumulative Time")
-    ax2.set_xlabel("Time (s)")
-    ax2.set_ylabel("Best Cost")
-    ax2.grid(True, alpha=0.2)
-    ax2.legend()
-
-    plt.tight_layout()
-    plt.savefig("ao/aorrt_analysis.png")
-    print("\nAnalysis plots saved to ao/aorrt_analysis.png")
-
-
-
-

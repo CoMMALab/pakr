@@ -14,7 +14,7 @@ import gc
 import numpy as np
 import mujoco
 import mujoco.mjx as mjx
-from rrtsolcheck import extract_sol, verify_sol
+from graveyard.rrtsolcheck import extract_sol, verify_sol
 
 def make_ball_block_propagate_fn(mjx_model):
     """
@@ -458,7 +458,7 @@ if __name__ == "__main__":
     print(f"BENCHMARK RESULTS ({len(times)} runs)")
     print("="*30)
     print(f"Success Rate:    {success_rate:.1f}%")
-    print(f"Average Time:    {jnp.mean(times)*1e3:.3f} ms (±{jnp.std(times)*1e3:.3f})")
+    print(f"Average Time:    {jnp.median(times)*1e3:.3f} ms (±{jnp.std(times)*1e3:.3f})")
     print(f"Min/Max Time:    {jnp.min(times)*1e3:.3f} / {jnp.max(times)*1e3:.3f} ms")
     print(f"Average Iters:   {jnp.mean(iters):.2f}")
     print(f"Average Size:    {jnp.mean(sizes):.2f}")
