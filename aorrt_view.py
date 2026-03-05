@@ -167,7 +167,7 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, best_cost, i):
 MAX_TREE_SIZE = 200000
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
-    parser.add_argument('--env', type=str, default='envs/house.csv', help='Path to the environment config file.')
+    parser.add_argument('--env', type=str, default='envs/tree.csv', help='Path to the environment config file.')
     parser.add_argument('--motion', type=str, default='di', help='Define motion type: Double Integrator (di), Dubins Airplane (da), Quadcopter (qc), Mjx Cartpole (mcp)')
     args = parser.parse_args()
 
@@ -291,7 +291,7 @@ if __name__ == "__main__":
     # --- Configuration ---
     N_RUNS = 10
     MAX_TIME = 5.0       
-    COST_THRESHOLD = 2.8
+    COST_THRESHOLD = 1.49
     GT_MIN_COST = 1.403  
     all_trajectories = [] 
 
@@ -359,6 +359,6 @@ if __name__ == "__main__":
             
 
     if all_trajectories:
-        view2.visualize_multi_trajectories(args.env, all_trajectories, sst_params, 0, "visuals/aosolution2.html")
+        view2.visualize_multi_trajectories(args.env, all_trajectories, sst_params, 1, "visuals/aosolution1.html")
     else:
         print("No successful runs found to visualize.")
