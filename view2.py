@@ -292,14 +292,14 @@ def visualize_multi_trajectories(env_path, trajectories, sst_params, output_name
             x=x, y=y, z=z, i=i, j=j, k=k,
             color='grey',
             opacity=0.3,
-            flatshading=True,
+            flatshading=False,
             # Adjusted lighting for uniform face color
             lighting=dict(
-                ambient=0.9, 
-                diffuse=0.0, 
+                ambient=0.5, 
+                diffuse=0.5, 
                 specular=0.0, 
                 fresnel=0.0,
-                roughness=0.7
+                roughness=0.5
             ),
             showlegend=False
         ))
@@ -360,66 +360,70 @@ A = 128
 batch_size = 32768
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
-    parser.add_argument('--env', type=str, default='envs/narrow.csv', help='Path to environment config.')
     parser.add_argument('--motion', type=str, default='di', help='di, da, qc')
     args = parser.parse_args()
 
-    match args.motion:
-        case 'di':
-            sst_params, sim_params, callables = params.sst_params_DI, params.sim_params_DI, params.Callables()
-        case 'da':
-            sst_params, sim_params, callables = params.sst_params_DA, params.sim_params_DA, params.callables_DA
-        case 'qc':
-            sst_params, sim_params, callables = params.sst_params_QC, params.sim_params_QC, params.callables_QC
-        case _:
-            print("invalid motion type")
-            sys.exit()
+    # Define your environments
+    environments = {
+        "narrow": "envs/narrow.csv",
+        "tree": "envs/tree.csv",
+        "house": "envs/house.csv"
+    }
 
+    # Setup parameters based on motion type
+    # (Assuming params is imported)
+    motion_map = {
+        'di': (params.sst_params_DI, params.sim_params_DI, params.Callables()),
+        'da': (params.sst_params_DA, params.sim_params_DA, params.callables_DA),
+        'qc': (params.sst_params_QC, params.sim_params_QC, params.callables_QC)
+    }
 
-    sst_params = sst_params.replace(batch_size=batch_size)
-    sim_params = sim_params.replace(batch_size=batch_size)
-    obstacles = helper.get_obs(args.env)
-    
+    if args.motion not in motion_map:
+        print("Invalid motion type")
+        sys.exit()
+
+    sst_base, sim_base, callables = motion_map[args.motion]
+    sst_params = sst_base.replace(batch_size=batch_size)
+    sim_params = sim_base.replace(batch_size=batch_size)
+
     # Update global references for the JIT closure
     SIM_PARAMS_RESERVED = sim_params
     CALLABLES_RESERVED = callables
-
-    # ------------------------------------------------------------------
-    # 2. Compilation Warm-up
-    # ------------------------------------------------------------------
-    print("\nStarting RRT - Pre-compiling kernels...")
-    dummy_tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.dims, sim_params.action_dims)
-    # This triggers the JIT for the while loop and all switch branches
-    init = jnp.concatenate([jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]), jnp.zeros(sim_params.dims - 3, dtype=jnp.float32)], axis=0)
+    # Pre-compilation setup
+    init = jnp.concatenate([jnp.asarray([sst_params.start.x, sst_params.start.y, sst_params.start.z]), 
+                            jnp.zeros(sim_params.dims - 3, dtype=jnp.float32)], axis=0)
     controls = jnp.zeros(sim_params.action_dims)
-    dummy_tree, _ = rrtree.add_nodes(dummy_tree, init, controls, -1, 0.0, 1)
-    _ = jit_while(dummy_tree, sst_params, sim_params, callables, obstacles, 0)
-    print("Compilation complete.\n")
 
     # ------------------------------------------------------------------
-    # 3. Execution Loop & Statistics
+    # Execution Loop over Environments
     # ------------------------------------------------------------------
-    all_trajectories = [] 
+    for idx, (env_name, env_path) in enumerate(environments.items()):
+        print(f"\n--- Processing Environment: {env_name} ({env_path}) ---")
+        obstacles = helper.get_obs(env_path)
+        all_trajectories = []
 
-    for i in range(10):
-        gc.collect()
-        tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
-        tree = jax.device_put(tree)
-        tree, _ = rrtree.add_nodes(tree, init, controls, -1, 0.0, 1)
+        # Run 10 iterations per environment
+        for i in range(10):
+            gc.collect()
+            tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
+            tree = jax.device_put(tree)
+            tree, _ = rrtree.add_nodes(tree, init, controls, -1, 0.0, 1)
 
-        result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
-        tree, key, goal_mask, goal, states, start_idx, iter_val, size = jax.block_until_ready(result)
+            result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
+            tree, key, goal_mask, goal, states, start_idx, iter_val, size = jax.block_until_ready(result)
 
-        path_nodes, actions = extract_sol(tree, goal_mask, start_idx)
-        
-        if actions is not None:
-            traj = rollout_full_trajectory(path_nodes[0], actions, sst_params, sim_params, callables)
-            all_trajectories.append(traj)
-            print(f"Run {i}: Path found and reconstructed.")
+            path_nodes, actions = extract_sol(tree, goal_mask, start_idx)
+            
+            if actions is not None:
+                traj = rollout_full_trajectory(path_nodes[0], actions, sst_params, sim_params, callables)
+                all_trajectories.append(traj)
+                print(f"Run {i}: Path found.")
+            else:
+                print(f"Run {i}: No path.")
+
+        # Save specific to the index
+        if all_trajectories:
+            output_file = f".visuals/solution{idx}.html"
+            visualize_multi_trajectories(env_path, all_trajectories, sst_params, output_file)
         else:
-            print(f"Run {i}: No path found.")
-
-    if all_trajectories:
-        visualize_multi_trajectories(args.env, all_trajectories, sst_params, "./solution1.html")
-    else:
-        print("No successful runs found to visualize.")
+            print(f"No successful runs for {env_name}.")
