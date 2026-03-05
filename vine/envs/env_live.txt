@@ -3,7 +3,7 @@ start: 1050 100 1.51
 goal: 200 950 0
 ob_type: box
 scale: 1
-goal_radius: 100
+goal_radius: 50
 obstacles:
 -40 -40 0 1040
 -40 -40 1140 0

@@ -296,25 +296,81 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, i):
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
+import numpy as np
+
+def intersect_segment_rect(x1, y1, x2, y2, rect):
+    """
+    Checks if segment (x1, y1)->(x2, y2) intersects a rectangle (rx1, ry1, rx2, ry2).
+    Returns the intersection point (ix, iy) or None if no intersection.
+    """
+    rx1, ry1, rx2, ry2 = rect[0], rect[1], rect[0]+(rect[2]-rect[0]), rect[1]+(rect[3]-rect[1])
+    
+    # Simple parametric check against 4 walls
+    # We want the intersection point closest to (x1, y1)
+    best_t = 1.1 # Value > 1 means no intersection
+    
+    # Helper to check wall
+    def check_line(p1, p2, wall_min, wall_max, is_vertical):
+        nonlocal best_t
+        if is_vertical: # Wall is x = constant
+            x = wall_min
+            if abs(x2 - x1) < 1e-6: return
+            t = (x - x1) / (x2 - x1)
+            if 0 <= t <= 1:
+                y = y1 + t * (y2 - y1)
+                if ry1 <= y <= ry2:
+                    best_t = min(best_t, t)
+        else: # Wall is y = constant
+            y = wall_min
+            if abs(y2 - y1) < 1e-6: return
+            t = (y - y1) / (y2 - y1)
+            if 0 <= t <= 1:
+                x = x1 + t * (x2 - x1)
+                if rx1 <= x <= rx2:
+                    best_t = min(best_t, t)
+
+    check_line((x1, y1), (x2, y2), rx1, None, True)
+    check_line((x1, y1), (x2, y2), rx2, None, True)
+    check_line((x1, y1), (x2, y2), ry1, None, False)
+    check_line((x1, y1), (x2, y2), ry2, None, False)
+    
+    if best_t <= 1.0:
+        return x1 + best_t * (x2 - x1), y1 + best_t * (y2 - y1)
+    return None
 
 def visualize_tree(tree, obstacles, sst_params, sim_params, iteration):
-    """Visualizes only the leaf nodes (distal frontiers) of the RRT with clean axes."""
     fig, ax = plt.subplots(figsize=(10, 8))
     
-    # 1. Clean background/Obstacles
+    # 1. Obstacles
+    rects = []
+    cmap = LinearSegmentedColormap.from_list("obs_gray", ["#404040", "#757575"])
+    
     for obs in obstacles:
         x1, y1, x2, y2 = obs
-        ax.add_patch(patches.Rectangle((x1, y1), x2-x1, y2-y1, color='gray', alpha=0.5))
+        rects.append((x1, y1, x2, y2))
+        width, height = x2 - x1, y2 - y1
+        
+        # Draw the gradient fill
+        # We create a 2D array for the gradient and use imshow clipped to the rectangle
+        im = ax.imshow(jnp.array([[0, 0], [1, 1]]), cmap=cmap, interpolation='bicubic',
+                       extent=(x1, x1+width, y1, y1+height), 
+                       zorder=1, aspect='auto', alpha=0.8)
+        
+        # Add a crisp outline
+        rect_outline = patches.Rectangle((x1, y1), width, height, 
+                                        linewidth=1.5, edgecolor='#2b2b2b', 
+                                        facecolor='none', zorder=1.1)
+        ax.add_patch(rect_outline)
 
-    # 2. Identify Leaf Nodes (Nodes that are never a parent)
+    # 2. Identify Leaf Nodes
     valid_size = tree.tree_size
     all_parents = np.array(tree.parents[:valid_size])
     parent_indices = set(all_parents)
     leaf_indices = [i for i in range(valid_size) if i not in parent_indices]
-    
     active_states = np.array(tree.states)
 
-    # 3. Draw only the Leaf Trajectories
+    # 3. Draw Leaf Trajectories with Clipping
     for idx in leaf_indices:
         state = active_states[idx]
         angles = state[3:33] 
@@ -323,52 +379,55 @@ def visualize_tree(tree, obstacles, sst_params, sim_params, iteration):
         
         curr_x, curr_y = sst_params.start.x, sst_params.start.y
         curr_h = sst_params.start.z 
-        xs, ys = [curr_x], [curr_y]
+        
+        # We process segments one by one
+        path = [(curr_x, curr_y)]
         
         for i in range(sim_params.max_bodies):
             length = 0.0
-            if i < n_bodies:
-                length = sim_params.body_length
-            elif i == n_bodies:
-                length = tip_len
+            if i < n_bodies: length = sim_params.body_length
+            elif i == n_bodies: length = tip_len
             
-            if length <= 0.0 and i > n_bodies:
-                break
+            if length <= 0.0 and i > n_bodies: break
                 
             curr_h += angles[i]
-            curr_x += length * np.cos(curr_h)
-            curr_y += length * np.sin(curr_h)
-            xs.append(curr_x)
-            ys.append(curr_y)
-
+            next_x = curr_x + length * np.cos(curr_h)
+            next_y = curr_y + length * np.sin(curr_h)
+            
+            # Check for collision
+            hit = False
+            for rect in rects:
+                # Does this segment intersect a rect?
+                ipt = intersect_segment_rect(curr_x, curr_y, next_x, next_y, rect)
+                if ipt:
+                    path.append(ipt)
+                    hit = True
+                    break # Stop at first collision
+            
+            if not hit:
+                path.append((next_x, next_y))
+                curr_x, curr_y = next_x, next_y
+            else:
+                break # Vine stopped by obstacle
+                
+        # Draw path
+        xs, ys = zip(*path)
         ax.plot(xs, ys, color='royalblue', alpha=0.4, linewidth=0.8, zorder=2)
+        ax.scatter(xs[-1], ys[-1], s=3, c='blue', zorder=3)
 
-    # 4. Plot Tip Points for leaves
-    leaf_states = active_states[leaf_indices]
-    ax.scatter(leaf_states[:, 0], leaf_states[:, 1], s=3, c='blue', zorder=3)
-    
-    # Start and Goal markers
+    # Start/Goal
     ax.scatter(sst_params.start.x, sst_params.start.y, color='green', s=100, marker='*')
     ax.add_patch(patches.Circle((sst_params.goal.x, sst_params.goal.y), sst_params.goal_radius, 
                                 color='red', fill=False, linestyle='--'))
 
-    # --- AXIS CLEANUP ---
-    #ax.set_title(f"Vine RRT Frontier - Iteration {iteration} (Leaves: {len(leaf_indices)})")
     ax.set_xlim(sst_params.min_x, sst_params.max_x)
     ax.set_ylim(sst_params.min_y, sst_params.max_y)
-    ax.set_aspect('equal')
-
-    # Remove the numbers/ticks
     ax.set_xticks([])
     ax.set_yticks([])
-    # Optional: Remove the outer box spine as well if you want a truly minimalist look
-    # for spine in ax.spines.values():
-    #     spine.set_visible(False)
-    # --------------------
+    ax.set_aspect('equal')
     
-    plt.savefig(f"rrt_leaf_iter_{iteration:02d}.png", dpi=150, bbox_inches='tight')
+    plt.savefig(f"vine/results/rrt_leaf_iter_{iteration:02d}.png", dpi=300, bbox_inches='tight')
     plt.close(fig)
-
 from flax import struct
 import jax.numpy as jnp
 
@@ -398,7 +457,7 @@ class SSTparams:
     start: Position
     goal: Position
     goal_radius: float
-    time_to_evolve: int = 70
+    time_to_evolve: int = 50
 
 if __name__ == "__main__":
     cfg = load_box_config('vine/envs/env_live.txt')
@@ -459,7 +518,7 @@ if __name__ == "__main__":
     rng_key = jax.random.PRNGKey(42)
     
     print(f"Starting 10 iterations of RRT...")
-    for i in range(10):
+    for i in range(15):
         # Run a single batch iteration
         tree, rng_key, goal_mask, goal_count, states_end, start_idx = rrt_iteration(
             tree, rng_key, obstacles, sst_params, sim_params, callables
@@ -470,7 +529,7 @@ if __name__ == "__main__":
         
         # Save visualization
         visualize_tree(tree, obstacles, sst_params, sim_params, i + 1)
-        
+        print(f"Iteration {i+1}: Tree size = {tree.tree_size}, New nodes = {tree.tree_size - start_idx}, Goals found in batch = {goal_count}")
         if goal_count > 0:
             print(f"Goal found at iteration {i+1}!")
     # dummy_tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.max_bodies)
