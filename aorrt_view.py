@@ -128,31 +128,31 @@ def aorrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables,
 
 
 
-@partial(jax.jit, static_argnums=(1,2,3))
+@partial(jax.jit, static_argnums=(1, 2, 3))
 def jit_while(tree, sst_params, sim_params, callables, obstacles, best_cost, i):
+    # Retrieve MAX_TREE_SIZE from the tree object or pass it as a parameter
+    # Assuming tree.max_size is a property of your KinoTree
+    max_size = MAX_TREE_SIZE
 
     def body_fn(carry):
         tree, key, goal_mask, goal, states, start_idx, iter = carry
-
         key, subkey = jax.random.split(key)
 
         tree, subkey, goal_mask, goal, states, start_idx = aorrt_iteration(
-            tree,
-            subkey,
-            obstacles,
-            sst_params,
-            sim_params,
-            callables,
-            best_cost
+            tree, subkey, obstacles, sst_params, sim_params, callables, best_cost
         )
-
 
         return (tree, key, goal_mask, goal, states, start_idx, iter + 1)
 
     def cond_fn(carry):
         tree, key, goal_mask, goal, states, start_idx, iter = carry
-        # Continue while goal not reached
-        return goal == 0  # or whatever scalar stopping condition
+        
+        # New condition: Continue if goal NOT reached AND tree size < max_size
+        not_reached = (goal == 0)
+        not_full = (tree.tree_size < max_size)
+        
+        return jnp.logical_and(not_reached, not_full)
+
     init_carry = (tree, 
                   jax.random.PRNGKey(i),
                   jnp.zeros(sim_params.batch_size, dtype=bool),
@@ -291,7 +291,7 @@ if __name__ == "__main__":
     # --- Configuration ---
     N_RUNS = 10
     MAX_TIME = 5.0       
-    COST_THRESHOLD = 3.5
+    COST_THRESHOLD = 3.0
     GT_MIN_COST = 1.403  
     all_trajectories = [] 
 
