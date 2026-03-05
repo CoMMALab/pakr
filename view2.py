@@ -273,7 +273,7 @@ def get_sphere_mesh(x0, y0, z0, radius=0.05, resolution=20):
     triangles = np.array(triangles)
     return x, y, z, triangles[:, 0], triangles[:, 1], triangles[:, 2]
 
-def visualize_multi_trajectories(env_path, trajectories, sst_params, output_name="./solution.html"):
+def visualize_multi_trajectories(env_path, trajectories, sst_params, idx, output_name="./solution.html"):
     """Generates the 3D HTML visualization with obstacles and multiple planned paths."""
     
     # Load Environment Obstacles
@@ -287,20 +287,37 @@ def visualize_multi_trajectories(env_path, trajectories, sst_params, output_name
     for box in data:
         x1, y1, z1, x2, y2, z2 = box
         x, y, z, i, j, k = create_box_mesh(x1, y1, z1, x2, y2, z2)
-
-        fig.add_trace(go.Mesh3d(
+        
+        if idx == 0:
+            fig.add_trace(go.Mesh3d(
+                x=x, y=y, z=z, i=i, j=j, k=k,
+                color='grey',
+                opacity=0.3,
+                flatshading=False,
+                # Adjusted lighting for uniform face color
+                lighting=dict(
+                    ambient=0.9, 
+                    diffuse=0.0, 
+                    specular=0.0, 
+                    fresnel=0.0,
+                    roughness=0.5
+                ),
+                showlegend=False
+            ))
+        else:
+            fig.add_trace(go.Mesh3d(
             x=x, y=y, z=z, i=i, j=j, k=k,
-            color='grey',
+            color='lightgrey',
             opacity=0.3,
-            flatshading=False,
-            # Adjusted lighting for uniform face color
+            flatshading=True,
             lighting=dict(
-                ambient=0.9, 
-                diffuse=0.0, 
-                specular=0.0, 
-                fresnel=0.0,
-                roughness=0.5
+                ambient=0.05,
+                diffuse=1.0,
+                roughness=1.0,
+                specular=0.0,
+                fresnel=0.0
             ),
+            lightposition=dict(x=5, y=5, z=10),
             showlegend=False
         ))
         add_box_edges(fig, x, y, z)
@@ -424,6 +441,6 @@ if __name__ == "__main__":
         # Save specific to the index
         if all_trajectories:
             output_file = f".visuals/solutiona{idx}.html"
-            visualize_multi_trajectories(env_path, all_trajectories, sst_params, output_file)
+            visualize_multi_trajectories(env_path, all_trajectories, sst_params, idx, output_file)
         else:
             print(f"No successful runs for {env_name}.")
