@@ -81,21 +81,33 @@ def plot_all_results(data_path, obstacles):
     R = np.sqrt(X**2 + Y**2)
     
     # Create the gradient (1.0 at center, 0.0 at edge)
-    goal_gradient = np.clip(1.0 - (R / radius), 0, 1)
+    # 1. Goal Gradient Setup (Reverse: Light center, Darker edge)
+    radius = 0.05
+    res = 50
+    x_grid = np.linspace(-radius, radius, res)
+    y_grid = np.linspace(-radius, radius, res)
+    X, Y = np.meshgrid(x_grid, y_grid)
+    R = np.sqrt(X**2 + Y**2)
     
-    # Create a mask: set everything outside the radius to transparent (NaN or alpha 0)
-    # Using np.ma (masked array) is the cleanest way to hide pixels outside the circle
+    # Inverted gradient: 0.0 at center, 1.0 at edge
+    goal_gradient = np.clip(R / radius, 0, 1)
+    
+    # Create mask for circular shape
     mask = R <= radius
     masked_gradient = np.ma.masked_where(~mask, goal_gradient)
     
-    # 2. Plot the Masked Gradient
+    # 2. Add the Goal Gradient (using a custom cmap for Limegreen)
+    # This maps 0.0 (center) to light lime, and 1.0 (edge) to dark lime
+    custom_cmap = LinearSegmentedColormap.from_list("green_grad", ["#CCFFCC", "#32CD32"])
+    
     ax.imshow(masked_gradient, extent=[sst_params.goal.x-radius, sst_params.goal.x+radius, 
                                        sst_params.goal.y-radius, sst_params.goal.y+radius], 
-              cmap='Greens', alpha=0.9, zorder=4)
+              cmap=custom_cmap, alpha=0.8, zorder=4)
     
-    # 3. Add the Outline
+    # 3. Add the Outline (Consistent opacity 0.8)
     circle_outline = plt.Circle((sst_params.goal.x, sst_params.goal.y), radius, 
-                                color='green', fill=False, linewidth=1.5, zorder=5)
+                                color='#32CD32', fill=False, linewidth=1.5, 
+                                alpha=0.8, zorder=5)
     ax.add_patch(circle_outline)
 
     # 3. Plot Paths
