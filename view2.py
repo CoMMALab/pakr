@@ -296,7 +296,7 @@ def visualize_multi_trajectories(env_path, trajectories, sst_params, output_name
             # Adjusted lighting for uniform face color
             lighting=dict(
                 ambient=0.5, 
-                diffuse=0.5, 
+                diffuse=0.0, 
                 specular=0.0, 
                 fresnel=0.0,
                 roughness=0.5
