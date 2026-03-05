@@ -12,7 +12,7 @@ import helper
 import time
 import gc
 import numpy as np
-import rrt_view
+import view2
 
 SIM_PARAMS_RESERVED = None
 CALLABLES_RESERVED = None
@@ -291,7 +291,7 @@ if __name__ == "__main__":
     # --- Configuration ---
     N_RUNS = 10
     MAX_TIME = 5.0       
-    COST_THRESHOLD = 2.9
+    COST_THRESHOLD = 2.8
     GT_MIN_COST = 1.403  
     all_trajectories = [] 
 
@@ -341,10 +341,10 @@ if __name__ == "__main__":
             # Exit conditions
             if elapsed >= MAX_TIME or best_cost <= COST_THRESHOLD:
                 # Capture the final state of this run before breaking
-                path_nodes, actions = rrt_view.extract_sol(tree, goal_mask, start_idx)
+                path_nodes, actions = view2.extract_sol(tree, goal_mask, start_idx)
         
                 if actions is not None:
-                    traj = rrt_view.rollout_full_trajectory(path_nodes[0], actions, sst_params, sim_params, callables)
+                    traj = view2.rollout_full_trajectory(path_nodes[0], actions, sst_params, sim_params, callables)
                     all_trajectories.append(traj)
                     print(f"Run {run_id}: Path found and reconstructed.")
                 else:
@@ -359,6 +359,6 @@ if __name__ == "__main__":
             
 
     if all_trajectories:
-        rrt_view.visualize_multi_trajectories(args.env, all_trajectories, sst_params, "./aosolution2.html")
+        view2.visualize_multi_trajectories(args.env, all_trajectories, sst_params, 0, "visuals/aosolution2.html")
     else:
         print("No successful runs found to visualize.")

@@ -440,7 +440,7 @@ if __name__ == "__main__":
 
         # Save specific to the index
         if all_trajectories:
-            output_file = f".visuals/solutiona{idx}.html"
+            output_file = f"visuals/solutiona{idx}.html"
             visualize_multi_trajectories(env_path, all_trajectories, sst_params, idx, output_file)
         else:
             print(f"No successful runs for {env_name}.")
