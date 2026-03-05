@@ -396,10 +396,10 @@ class SSTparams:
     start: Position
     goal: Position
     goal_radius: float
-    time_to_evolve: int = 50
+    time_to_evolve: int = 100
 
 if __name__ == "__main__":
-    cfg = load_box_config('vine/envs/env_live.txt')
+    cfg = load_box_config('vine/envs/env_long.txt')
 
     batch_size = 128
     A = 2

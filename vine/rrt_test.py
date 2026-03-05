@@ -426,7 +426,7 @@ def visualize_tree(tree, obstacles, sst_params, sim_params, iteration):
     ax.set_yticks([])
     ax.set_aspect('equal')
     
-    plt.savefig(f"vine/results/rrt_leaf_iter_{iteration:02d}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"vine/results/rrt_long{iteration:02d}.png", dpi=300, bbox_inches='tight')
     plt.close(fig)
 from flax import struct
 import jax.numpy as jnp
@@ -457,10 +457,10 @@ class SSTparams:
     start: Position
     goal: Position
     goal_radius: float
-    time_to_evolve: int = 50
+    time_to_evolve: int = 100
 
 if __name__ == "__main__":
-    cfg = load_box_config('vine/envs/env_live.txt')
+    cfg = load_box_config('vine/envs/env_long.txt')
 
     batch_size = 128
     A = 2
@@ -518,7 +518,7 @@ if __name__ == "__main__":
     rng_key = jax.random.PRNGKey(42)
     
     print(f"Starting 10 iterations of RRT...")
-    for i in range(15):
+    for i in range(25):
         # Run a single batch iteration
         tree, rng_key, goal_mask, goal_count, states_end, start_idx = rrt_iteration(
             tree, rng_key, obstacles, sst_params, sim_params, callables

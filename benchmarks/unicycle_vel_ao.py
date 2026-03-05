@@ -127,24 +127,56 @@ def aorrt_iteration(tree, rng_key, obstacles, sst_params, sim_params, callables,
 
 @partial(jax.jit, static_argnums=(1, 2, 3))
 def jit_while(tree, sst_params, sim_params, callables, obstacles, best_cost, i):
+    # Retrieve MAX_TREE_SIZE from the tree object or pass it as a parameter
+    # Assuming tree.max_size is a property of your KinoTree
+    max_size = MAX_TREE_SIZE
+
     def body_fn(carry):
         tree, key, goal_mask, goal, states, start_idx, iter = carry
         key, subkey = jax.random.split(key)
+
         tree, subkey, goal_mask, goal, states, start_idx = aorrt_iteration(
             tree, subkey, obstacles, sst_params, sim_params, callables, best_cost
         )
+
         return (tree, key, goal_mask, goal, states, start_idx, iter + 1)
 
     def cond_fn(carry):
         tree, key, goal_mask, goal, states, start_idx, iter = carry
-        return (goal == 0) & (tree.tree_size < MAX_TREE_SIZE - sim_params.batch_size)
+        
+        # New condition: Continue if goal NOT reached AND tree size < max_size
+        not_reached = (goal == 0)
+        not_full = (tree.tree_size < max_size)
+        
+        return jnp.logical_and(not_reached, not_full)
 
-    init_carry = (tree, jax.random.PRNGKey(i), jnp.zeros(sim_params.batch_size, dtype=bool),
-                  jnp.array(0, dtype=jnp.int32), jnp.zeros([sim_params.batch_size, sim_params.dims], dtype=jnp.float32),
-                  jnp.array(0, dtype=jnp.int32), jnp.array(0, dtype=jnp.int32))
+    init_carry = (tree, 
+                  jax.random.PRNGKey(i),
+                  jnp.zeros(sim_params.batch_size, dtype=bool),
+                  jnp.array(0, dtype=jnp.int32),
+                  jnp.zeros([sim_params.batch_size, sim_params.dims], dtype=jnp.float32),
+                  jnp.array(0, dtype=jnp.int32),
+                  jnp.array(0, dtype=jnp.int32))
 
     tree, key, goal_mask, goal, states, start_idx, iter = jax.lax.while_loop(cond_fn, body_fn, init_carry)
     return tree, key, goal_mask, goal, states, start_idx, iter, tree.tree_size
+
+def extract_sol(tree, goal_mask, start_idx):
+    if jnp.sum(goal_mask) == 0:
+        print("error: no goal reached")
+        return None, None
+    
+    #print(jnp.sum(goal_mask))
+
+    goal_idxs = jnp.argmax(goal_mask)
+    goal_idx = goal_idxs + start_idx
+    path = []
+    actions = []
+    while goal_idx != -1:
+        path.append(tree.states[goal_idx])
+        actions.append(tree.actions[goal_idx])
+        goal_idx = tree.parents[goal_idx]
+    return jnp.array(path[::-1]), jnp.array(actions[::-1])
 
 MAX_TREE_SIZE = 100000
 if __name__ == "__main__":
@@ -152,10 +184,10 @@ if __name__ == "__main__":
     motion_constraints = MotionConstraints(max_vel=0.4, min_vel=0.0, max_accel=1.5, min_accel=-1.5)
     sim_params = MJXparams(motion_constraints=motion_constraints, physics_constants=PhysicsConstants(),
                            batch_size=batch_size, bounds=Bounds(min_x=0.0, max_x=1.0, min_y=0.0, max_y=1.0, min_z=0.0, max_z=0.0),
-                           dims=3, action_dims=2, dt=0.1, seed=42)
+                           dims=3, action_dims=2, dt=0.025, seed=42)
     sst_params = SSTparams(batch_size=batch_size, δBN=0.04, δs=0.02, decay=0.8,
                            start=Position(x=0.05, y=0.05, z=0.0), goal=Position(x=0.95, y=0.95, z=0.0),
-                           goal_radius=0.05, time_to_evolve=10)
+                           goal_radius=0.05, time_to_evolve=40)
     callables = Callables(prop_fn=propagate.propagate_unicycle, valid_fn=valid_unicycle, sample_fn=sample_unicycle,
                           dist_fn=dist_unicycle, sampact_fn=sample_actions_unicycle, goal_fn=reached_goal_unicycle)
     
@@ -167,8 +199,9 @@ if __name__ == "__main__":
     _ = jit_while(dummy_tree, sst_params, sim_params, callables, obstacles, jnp.inf, 0)
     print("Warm-up complete.")
 
-    N_RUNS, MAX_TIME, COST_THRESHOLD = 100, 3.0, 5.0
+    N_RUNS, MAX_TIME, COST_THRESHOLD = 100, 3.0, 4.5
     run_summaries = []
+    all_solutions = []
 
     for run_id in range(N_RUNS):
         gc.collect()
@@ -193,8 +226,15 @@ if __name__ == "__main__":
             if elapsed >= MAX_TIME or best_cost <= COST_THRESHOLD or tree.tree_size >= MAX_TREE_SIZE - batch_size:
                 run_summaries.append({"cost": best_cost if best_cost != float('inf') else None, "time": elapsed, "nodes": int(tree.tree_size), "iters": ao_iter})
                 print(f"Run {run_id+1}: Cost: {best_cost:.4f} | Time: {elapsed:.2f}s | Nodes: {tree.tree_size}")
+                path, actions = extract_sol(tree, goal_mask, start_idx)
+                all_solutions.append({
+                    'path': np.array(path),       # The sparse nodes in the tree
+                    'actions': np.array(actions), # The constant actions applied between nodes
+                    'start': np.array([sst_params.start.x, sst_params.start.y, 0.0]),
+                    'goal': np.array([sst_params.goal.x, sst_params.goal.y])
+                })
                 break
-
+    np.savez('benchmarks/ao_uni_results.npz', solutions=all_solutions)
     # Stats Calculation
     valid_costs = [s['cost'] for s in run_summaries if s['cost'] is not None]
     if valid_costs:

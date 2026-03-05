@@ -50,10 +50,8 @@ def plot_all_results(data_path, obstacles):
     
     fig, ax = plt.subplots(figsize=(8, 8))
     
-    # Obstacle Gradient Setup
+    # 1. Plot Obstacles
     obs_cmap = LinearSegmentedColormap.from_list("grey_grad", ["#d3d3d3", "#a9a9a9"])
-    
-    # Plot Obstacles
     for obs in obstacles:
         x1, y1, x2, y2 = obs[0], obs[1], obs[2], obs[3]
         gradient = np.linspace(0, 1, 100).reshape(-1, 1)
@@ -61,7 +59,7 @@ def plot_all_results(data_path, obstacles):
         rect = patches.Rectangle((x1, y1), x2-x1, y2-y1, linewidth=1.5, edgecolor='#505050', facecolor='none', zorder=2)
         ax.add_patch(rect)
 
-    # 1. Goal Gradient Setup (Green to White radial gradient)
+    # 2. Goal Region (Radial Gradient)
     radius = 0.05
     res = 50
     x_grid = np.linspace(-radius, radius, res)
@@ -69,56 +67,40 @@ def plot_all_results(data_path, obstacles):
     X, Y = np.meshgrid(x_grid, y_grid)
     R = np.sqrt(X**2 + Y**2)
     
-    # Create radial alpha/color mask: 1.0 at center, 0.0 at edge
-    goal_gradient = np.clip(1.0 - (R / radius), 0, 1)
-    
-    # 1. Goal Gradient Setup
-    radius = 0.05
-    res = 50
-    x_grid = np.linspace(-radius, radius, res)
-    y_grid = np.linspace(-radius, radius, res)
-    X, Y = np.meshgrid(x_grid, y_grid)
-    R = np.sqrt(X**2 + Y**2)
-    
-    # Create the gradient (1.0 at center, 0.0 at edge)
-    # 1. Goal Gradient Setup (Reverse: Light center, Darker edge)
-    radius = 0.05
-    res = 50
-    x_grid = np.linspace(-radius, radius, res)
-    y_grid = np.linspace(-radius, radius, res)
-    X, Y = np.meshgrid(x_grid, y_grid)
-    R = np.sqrt(X**2 + Y**2)
-    
-    # Inverted gradient: 0.0 at center, 1.0 at edge
+    # Gradient: Light at center, darker at edge
     goal_gradient = np.clip(R / radius, 0, 1)
-    
-    # Create mask for circular shape
     mask = R <= radius
     masked_gradient = np.ma.masked_where(~mask, goal_gradient)
     
-    # 2. Add the Goal Gradient (using a custom cmap for Limegreen)
-    # This maps 0.0 (center) to light lime, and 1.0 (edge) to dark lime
     custom_cmap = LinearSegmentedColormap.from_list("green_grad", ["#CCFFCC", "#32CD32"])
     
+    # Fill (zorder 4)
     ax.imshow(masked_gradient, extent=[sst_params.goal.x-radius, sst_params.goal.x+radius, 
                                        sst_params.goal.y-radius, sst_params.goal.y+radius], 
               cmap=custom_cmap, alpha=0.8, zorder=4)
     
-    # 3. Add the Outline (Consistent opacity 0.8)
+    # Outline (zorder 10): Ensure it is drawn on top and is fully opaque
     circle_outline = plt.Circle((sst_params.goal.x, sst_params.goal.y), radius, 
-                                color='#32CD32', fill=False, linewidth=1.5, 
-                                alpha=0.8, zorder=5)
+                                color='#32CD32', fill=False, linewidth=3.5, 
+                                alpha=1.0, zorder=10)
     ax.add_patch(circle_outline)
 
-    # 3. Plot Paths
+    # 3. Plot Paths and Start
     for sol in solutions:
         full_traj = rollout_full_trajectory(sol['path'][0], sol['actions'], sst_params, sim_params, callables.prop_fn)
         ax.plot(full_traj[:, 0], full_traj[:, 1], color='blue', alpha=0.15, linewidth=1, zorder=3)
         
-    # Start Marker
-    ax.scatter(sst_params.start.x, sst_params.start.y, color='blue', s=20, label='Start', zorder=5)
+    ax.scatter(sst_params.start.x, sst_params.start.y, color='blue', s=20, zorder=5)
+    min_x, max_x = sim_params.bounds.min_x, sim_params.bounds.max_x
+    min_y, max_y = sim_params.bounds.min_y, sim_params.bounds.max_y
+    
+    boundary = patches.Rectangle(
+        (min_x, min_y), max_x - min_x, max_y - min_y,
+        linewidth=3.0, edgecolor='black', facecolor='none', zorder=10
+    )
+    ax.add_patch(boundary)
 
-    # Clean axes
+    # 4. Clean axes
     ax.set_xticks([])
     ax.set_yticks([])
     for spine in ax.spines.values(): spine.set_visible(False)
@@ -129,7 +111,7 @@ def plot_all_results(data_path, obstacles):
     
     plt.tight_layout()
     plt.savefig('benchmarks/uni_solutions.png', bbox_inches='tight', pad_inches=0)
-    print("Saved visualization.")
+    print("Saved visualization with bold goal outline.")
 
 # Run plotting
 
