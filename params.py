@@ -182,7 +182,7 @@ goal_qc = Position(
 #batch_size = 65536
 batch_size = 8192
 seed = 0
-time_to_evolve = 20
+time_to_evolve = 40
 # Safe params
 
 # callables_MCP = Callables(
@@ -215,7 +215,7 @@ sim_params_DI = MJXparams(
     bounds = Bounds(),
     dims=6,
     action_dims=3,
-    dt = 0.05,
+    dt = 0.025,
     seed = seed
 )
 
