@@ -290,8 +290,8 @@ def visualize_multi_trajectories(env_path, trajectories, sst_params, output_name
 
         fig.add_trace(go.Mesh3d(
             x=x, y=y, z=z, i=i, j=j, k=k,
-            color='lightgrey',
-            opacity=0.5,
+            color='grey',
+            opacity=0.3,
             flatshading=True,
             # Adjusted lighting for uniform face color
             lighting=dict(
@@ -360,7 +360,7 @@ A = 128
 batch_size = 32768
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the SST planner.')
-    parser.add_argument('--env', type=str, default='envs/house.csv', help='Path to environment config.')
+    parser.add_argument('--env', type=str, default='envs/narrow.csv', help='Path to environment config.')
     parser.add_argument('--motion', type=str, default='di', help='di, da, qc')
     args = parser.parse_args()
 
@@ -420,6 +420,6 @@ if __name__ == "__main__":
             print(f"Run {i}: No path found.")
 
     if all_trajectories:
-        visualize_multi_trajectories(args.env, all_trajectories, sst_params, "./solution2.html")
+        visualize_multi_trajectories(args.env, all_trajectories, sst_params, "./solution1.html")
     else:
         print("No successful runs found to visualize.")
