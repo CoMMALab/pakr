@@ -295,7 +295,7 @@ def visualize_multi_trajectories(env_path, trajectories, sst_params, output_name
             flatshading=False,
             # Adjusted lighting for uniform face color
             lighting=dict(
-                ambient=0.5, 
+                ambient=0.9, 
                 diffuse=0.0, 
                 specular=0.0, 
                 fresnel=0.0,
@@ -423,7 +423,7 @@ if __name__ == "__main__":
 
         # Save specific to the index
         if all_trajectories:
-            output_file = f".visuals/solution{idx}.html"
+            output_file = f".visuals/solutiona{idx}.html"
             visualize_multi_trajectories(env_path, all_trajectories, sst_params, output_file)
         else:
             print(f"No successful runs for {env_name}.")
