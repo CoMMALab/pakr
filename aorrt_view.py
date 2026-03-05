@@ -291,7 +291,7 @@ if __name__ == "__main__":
     # --- Configuration ---
     N_RUNS = 10
     MAX_TIME = 5.0       
-    COST_THRESHOLD = 3.0
+    COST_THRESHOLD = 2.8
     GT_MIN_COST = 1.403  
     all_trajectories = [] 
 
