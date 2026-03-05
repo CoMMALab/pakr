@@ -213,7 +213,7 @@ if __name__ == "__main__":
     # Unicycle Configuration
     # ------------------------------------------------------------------
     batch_size = 2048
-    time_to_evolve = 10 
+    time_to_evolve = 40 
 
     motion_constraints = MotionConstraints(
         max_vel = 0.4,       # Max linear velocity
@@ -228,7 +228,7 @@ if __name__ == "__main__":
         bounds = Bounds(min_x=0.0, max_x=1.0, min_y=0.0, max_y=1.0, min_z=0.0, max_z=0.0),
         dims=3,              # [x, y, theta]
         action_dims=2,       # [v, omega]
-        dt = 0.1,
+        dt = 0.025,
         seed = 42
     )
 
@@ -267,7 +267,7 @@ if __name__ == "__main__":
     # 2. Execution Loop
     # ------------------------------------------------------------------
     times, iters, sizes, costs = [], [], [], []
-
+    all_solutions = []
     for i in range(100):
         gc.collect()
 
@@ -322,9 +322,16 @@ if __name__ == "__main__":
             times.append(timer)
             iters.append(iter_val)
             sizes.append(size)
+
+            all_solutions.append({
+                'path': np.array(path),       # The sparse nodes in the tree
+                'actions': np.array(actions), # The constant actions applied between nodes
+                'start': np.array([sst_params.start.x, sst_params.start.y, 0.0]),
+                'goal': np.array([sst_params.goal.x, sst_params.goal.y])
+            })
             
             print(f"Run {i:02d}: Goal reached! Iters: {iter_val}, Time: {timer*1e3:.2f}ms, Cost: {cost:.3f}")
-
+    np.savez('benchmarks/uni_results.npz', solutions=all_solutions)
         # Final Statistics Logic
     times = jnp.array(times)
     iters = jnp.array(iters)

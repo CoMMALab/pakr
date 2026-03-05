@@ -38,7 +38,11 @@ def rollout_full_trajectory(start_state, actions, sst_params, sim_params, prop_f
             
     return jnp.stack(trajectory)
 
+
+import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
 
 def plot_all_results(data_path, obstacles):
     data = np.load(data_path, allow_pickle=True)
@@ -46,54 +50,80 @@ def plot_all_results(data_path, obstacles):
     
     fig, ax = plt.subplots(figsize=(8, 8))
     
-    # 1. Plot Obstacles as Rectangles
-    # obs is [x1, y1, x2, y2]
+    # Obstacle Gradient Setup
+    obs_cmap = LinearSegmentedColormap.from_list("grey_grad", ["#d3d3d3", "#a9a9a9"])
+    
+    # Plot Obstacles
     for obs in obstacles:
-        width = obs[2] - obs[0]
-        height = obs[3] - obs[1]
-        rect = patches.Rectangle(
-            (obs[0], obs[1]), width, height, 
-            linewidth=1, edgecolor='red', facecolor='gray', alpha=0.5
-        )
+        x1, y1, x2, y2 = obs[0], obs[1], obs[2], obs[3]
+        gradient = np.linspace(0, 1, 100).reshape(-1, 1)
+        ax.imshow(gradient, extent=[x1, x2, y1, y2], cmap=obs_cmap, aspect='auto', zorder=1)
+        rect = patches.Rectangle((x1, y1), x2-x1, y2-y1, linewidth=1.5, edgecolor='#505050', facecolor='none', zorder=2)
         ax.add_patch(rect)
 
-    # 2. Reconstruct and Plot each solution path
-    for sol in solutions:
-        full_traj = rollout_full_trajectory(
-            sol['path'][0], 
-            sol['actions'], 
-            sst_params, 
-            sim_params, 
-            callables.prop_fn
-        )
-        
-        # Plot (x, y) coordinates
-        ax.plot(full_traj[:, 0], full_traj[:, 1], color='blue', alpha=0.15, linewidth=1)
-        
-    # 3. Plot Start and Goal for context
-    ax.scatter(sst_params.start.x, sst_params.start.y, color='green', s=100, label='Start', zorder=5)
-    ax.scatter(sst_params.goal.x, sst_params.goal.y, color='gold', s=100, label='Goal', zorder=5)
+    # 1. Goal Gradient Setup (Green to White radial gradient)
+    radius = 0.05
+    res = 50
+    x_grid = np.linspace(-radius, radius, res)
+    y_grid = np.linspace(-radius, radius, res)
+    X, Y = np.meshgrid(x_grid, y_grid)
+    R = np.sqrt(X**2 + Y**2)
+    
+    # Create radial alpha/color mask: 1.0 at center, 0.0 at edge
+    goal_gradient = np.clip(1.0 - (R / radius), 0, 1)
+    
+    # 1. Goal Gradient Setup
+    radius = 0.05
+    res = 50
+    x_grid = np.linspace(-radius, radius, res)
+    y_grid = np.linspace(-radius, radius, res)
+    X, Y = np.meshgrid(x_grid, y_grid)
+    R = np.sqrt(X**2 + Y**2)
+    
+    # Create the gradient (1.0 at center, 0.0 at edge)
+    goal_gradient = np.clip(1.0 - (R / radius), 0, 1)
+    
+    # Create a mask: set everything outside the radius to transparent (NaN or alpha 0)
+    # Using np.ma (masked array) is the cleanest way to hide pixels outside the circle
+    mask = R <= radius
+    masked_gradient = np.ma.masked_where(~mask, goal_gradient)
+    
+    # 2. Plot the Masked Gradient
+    ax.imshow(masked_gradient, extent=[sst_params.goal.x-radius, sst_params.goal.x+radius, 
+                                       sst_params.goal.y-radius, sst_params.goal.y+radius], 
+              cmap='Greens', alpha=0.9, zorder=4)
+    
+    # 3. Add the Outline
+    circle_outline = plt.Circle((sst_params.goal.x, sst_params.goal.y), radius, 
+                                color='green', fill=False, linewidth=1.5, zorder=5)
+    ax.add_patch(circle_outline)
 
-    # 4. Format Plot
+    # 3. Plot Paths
+    for sol in solutions:
+        full_traj = rollout_full_trajectory(sol['path'][0], sol['actions'], sst_params, sim_params, callables.prop_fn)
+        ax.plot(full_traj[:, 0], full_traj[:, 1], color='blue', alpha=0.15, linewidth=1, zorder=3)
+        
+    # Start Marker
+    ax.scatter(sst_params.start.x, sst_params.start.y, color='blue', s=20, label='Start', zorder=5)
+
+    # Clean axes
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values(): spine.set_visible(False)
+    
     ax.set_xlim(sim_params.bounds.min_x, sim_params.bounds.max_x)
     ax.set_ylim(sim_params.bounds.min_y, sim_params.bounds.max_y)
     ax.set_aspect('equal')
-    ax.set_title(f"2D Double Integrator: {len(solutions)} Successful Paths")
-    ax.legend()
     
-    plt.savefig('benchmarks/uni_solutions.png')
-    print(f"Saved visualization to benchmarks/uni_solutions.png")
+    plt.tight_layout()
+    plt.savefig('benchmarks/uni_solutions.png', bbox_inches='tight', pad_inches=0)
+    print("Saved visualization.")
 
 # Run plotting
 
-batch_size = 4096
-time_to_evolve = 30
+batch_size = 2048
+time_to_evolve = 10
 
-motion_constraints = MotionConstraints(
-    max_vel = 0.5,
-    min_vel = -0.5,
-    max_accel = 1.0,
-    min_accel = -1.0)
 
 bounds = Bounds(
     min_x = 0.0, max_x = 1.0,
@@ -104,31 +134,30 @@ bounds = Bounds(
 start_pos = Position(x = 0.05, y = 0.05, z = 0.0)
 goal_pos = Position(x = 0.95, y = 0.95, z = 0.0)
 
+motion_constraints = MotionConstraints(
+    max_vel = 0.4,       # Max linear velocity
+    min_vel = 0.0,       # Unicycle usually moves forward
+    max_accel = 1.5,     # Used here as Max Angular Velocity (omega)
+    min_accel = -1.5)
+
 sim_params = MJXparams(
     motion_constraints=motion_constraints,
     physics_constants=PhysicsConstants(),
     batch_size=batch_size,
-    bounds = bounds,
-    dims=4,        # [x, y, vx, vy]
-    action_dims=2, # [ax, ay]
-    dt = 0.02,
+    bounds = Bounds(min_x=0.0, max_x=1.0, min_y=0.0, max_y=1.0, min_z=0.0, max_z=0.0),
+    dims=3,              # [x, y, theta]
+    action_dims=2,       # [v, omega]
+    dt = 0.1,
     seed = 42
 )
 
 sst_params = SSTparams(
     batch_size=batch_size,
-    δBN=0.04,
-    δs=0.02,
-    decay=0.8,
-    start=start_pos,
-    goal=goal_pos,
+    δBN=0.04, δs=0.02, decay=0.8,
+    start=Position(x=0.05, y=0.05, z=0.0),
+    goal=Position(x=0.95, y=0.95, z=0.0),
     goal_radius=0.05,
-    geo_cost_to_go_weight=0.2,
-    do_cost_to_go=True,
-    do_maximal= True,
-    do_set_cover= True,
-    time_to_evolve= time_to_evolve,
-    sparsity = 0,
+    time_to_evolve=time_to_evolve,
 )
 
 callables = Callables(
@@ -141,4 +170,4 @@ callables = Callables(
 )
 obstacles = helper.get_obs('envs/tree2d.csv')
 
-plot_all_results('benchmarks/uni_solutions.npz', obstacles)
+plot_all_results('benchmarks/uni_results.npz', obstacles)

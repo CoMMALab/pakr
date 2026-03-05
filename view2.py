@@ -421,12 +421,13 @@ if __name__ == "__main__":
 
         # Run 10 iterations per environment
         for i in range(10):
+            rnd = np.random.randint(0, 10000)
             gc.collect()
             tree = rrtree.KinoTree.init(max_size=MAX_TREE_SIZE, state_dim=sim_params.dims, action_dim=sim_params.action_dims)
             tree = jax.device_put(tree)
             tree, _ = rrtree.add_nodes(tree, init, controls, -1, 0.0, 1)
 
-            result = jit_while(tree, sst_params, sim_params, callables, obstacles, i)
+            result = jit_while(tree, sst_params, sim_params, callables, obstacles, rnd)
             tree, key, goal_mask, goal, states, start_idx, iter_val, size = jax.block_until_ready(result)
 
             path_nodes, actions = extract_sol(tree, goal_mask, start_idx)
