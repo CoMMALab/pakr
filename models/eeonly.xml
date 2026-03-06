@@ -1,6 +1,6 @@
 <mujoco model="ball_block_2d">
 
-  <option timestep="0.05"
+  <option timestep="0.03"
           gravity="0 0 -9.81"/>
 
   <size njmax="20" nconmax="10"/>

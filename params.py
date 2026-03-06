@@ -380,11 +380,11 @@ sst_params_EEB = SSTparams(
     decay=0.8,
     start=Position(x=0.1, y=0.0, z=0.0), # z is theta
     goal=Position(x=0.3, y=0.0, z=0.0),
-    goal_radius=0.05,
+    goal_radius=0.03,
     geo_cost_to_go_weight=0.0,
     do_cost_to_go=False,
     do_maximal=True,
     do_set_cover=True,
-    time_to_evolve=5,
+    time_to_evolve=15,
     sparsity=0,
 )
