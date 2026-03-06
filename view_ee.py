@@ -28,70 +28,65 @@ def get_sphere_mesh(x0, y0, z0, radius=0.05, resolution=20):
     triangles = np.array(triangles)
     return x, y, z, triangles[:, 0], triangles[:, 1], triangles[:, 2]
 
-def visualize_trajectory_no_obs(trajectory, output_name="./trajectory.html"):
+import plotly.graph_objects as go
+import numpy as np
+
+def visualize_trajectory_v2(trajectory, output_name="./trajectory_v2.html"):
     """
     trajectory: (N, 10) array
-    State order: [ee_x, ee_y, ee_dx, ee_dy, block_x, block_y, block_theta, block_dx, block_dy, block_dtheta]
+    State: [ee_x, ee_y, block_x, block_y, block_theta, ee_dx, ee_dy, block_dx, block_dy, block_dtheta]
     """
     fig = go.Figure()
     
-    # 1. Add Floor Plane (Bounding box: -0.3 to 0.7)
+    # 1. Floor Plane (-0.3 to 0.7)
     fig.add_trace(go.Mesh3d(
-        x=[-0.3, 0.7, 0.7, -0.3], 
-        y=[-0.3, -0.3, 0.7, 0.7], 
-        z=[0, 0, 0, 0],
-        color='rgb(230, 230, 230)',
-        opacity=0.5,
-        showlegend=False
+        x=[-0.3, 0.7, 0.7, -0.3], y=[-0.3, -0.3, 0.7, 0.7], z=[0, 0, 0, 0],
+        color='rgb(230, 230, 230)', opacity=0.3, showlegend=False
     ))
 
-    # 2. EE (Sphere) Trajectory - Green Line
+    # 2. EE Trajectory (Indices 0, 1)
     fig.add_trace(go.Scatter3d(
         x=trajectory[:, 0], y=trajectory[:, 1], z=np.full_like(trajectory[:, 0], 0.05),
-        mode='lines', line=dict(color='limegreen', width=5), name='EE Trajectory'
+        mode='lines', line=dict(color='limegreen', width=5), name='EE Path'
     ))
 
-    # 3. Block (Cube) Snapshots - Every 5 frames
-    block_size = 0.05 
+    # 3. Block Snapshots (Indices 2, 3, 4) - Drawn as full 3D Cubes
+    block_size = 0.05
     for i in range(0, len(trajectory), 5):
-        bx, by, btheta = trajectory[i, 4], trajectory[i, 5], trajectory[i, 6]
-        
-        # Rotation Matrix
+        bx, by, btheta = trajectory[i, 2], trajectory[i, 3], trajectory[i, 4]
         c, s = np.cos(btheta), np.sin(btheta)
-        R = np.array([[c, -s], [s, c]])
         
-        # Base vertices
-        v = np.array([[-block_size, -block_size], [block_size, -block_size], 
-                      [block_size, block_size], [-block_size, block_size]])
+        # Define 8 corners of the cube
+        x_pts = [-block_size, block_size, block_size, -block_size]
+        y_pts = [-block_size, -block_size, block_size, block_size]
         
-        # Rotate and translate
-        v_rot = (R @ v.T).T + np.array([bx, by])
+        # Rotate footprint
+        x_rot = [x * c - y * s + bx for x, y in zip(x_pts, y_pts)]
+        y_rot = [x * s + y * c + by for x, y in zip(x_pts, y_pts)]
         
-        # Plot cube snapshot
+        # Add as a Mesh3d cube (bottom and top faces)
         fig.add_trace(go.Mesh3d(
-            x=np.concatenate([v_rot[:, 0], v_rot[:, 0]]),
-            y=np.concatenate([v_rot[:, 1], v_rot[:, 1]]),
-            z=[0, 0, 0, 0, 0.1, 0.1, 0.1, 0.1],
-            color='red', opacity=0.15, showlegend=(i==0), name='Block Path'
+            x=x_rot + x_rot, y=y_rot + y_rot, z=[0]*4 + [0.1]*4,
+            alphahull=0, color='red', opacity=0.2, showlegend=(i==0), name='Block Snapshot'
         ))
 
-    # 4. Goal Area (Marker at 0.3, 0)
-    gx, gy, gz, gi, gj, gk = get_sphere_mesh(0.3, 0.0, 0.001, radius=0.05)
-    fig.add_trace(go.Mesh3d(x=gx, y=gy, z=gz, i=gi, j=gj, k=gk, color='green', opacity=0.5, name='Goal'))
+    # 4. Goal Area (Flat 2D Circle)
+    theta = np.linspace(0, 2*np.pi, 50)
+    fig.add_trace(go.Scatter3d(
+        x=0.3 + 0.05 * np.cos(theta), y=0.0 + 0.05 * np.sin(theta), z=np.zeros(50),
+        mode='lines', line=dict(color='green', width=4), name='Goal'
+    ))
 
-    # 5. Scene Configuration
     fig.update_layout(
         scene=dict(
             xaxis=dict(range=[-0.3, 0.7]),
             yaxis=dict(range=[-0.3, 0.7]),
             zaxis=dict(range=[0, 0.5]),
-            aspectmode='manual',
-            aspectratio=dict(x=1, y=1, z=0.5)
+            aspectmode='manual', aspectratio=dict(x=1, y=1, z=0.5)
         ),
         margin=dict(l=0, r=0, b=0, t=0)
     )
     fig.write_html(output_name)
-    print(f"Saved visualization to {output_name}")
 
 trajectory = np.load("mjx_full_trajectory.npy")
 visualize_trajectory_no_obs(trajectory)
