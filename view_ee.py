@@ -89,4 +89,4 @@ def visualize_trajectory_v2(trajectory, output_name="./trajectory_v2.html"):
     fig.write_html(output_name)
 
 trajectory = np.load("mjx_full_trajectory.npy")
-visualize_trajectory_no_obs(trajectory)
+visualize_trajectory_v2(trajectory)
