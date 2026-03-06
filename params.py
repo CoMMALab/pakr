@@ -385,6 +385,6 @@ sst_params_EEB = SSTparams(
     do_cost_to_go=False,
     do_maximal=True,
     do_set_cover=True,
-    time_to_evolve=25,
+    time_to_evolve=5,
     sparsity=0,
 )
