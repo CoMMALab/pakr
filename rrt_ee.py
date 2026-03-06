@@ -291,7 +291,7 @@ if __name__ == "__main__":
             b = 8192
             sim_params = sim_params.replace(batch_size=b)
             sst_params = sst_params.replace(batch_size=b)
-            sst_params = sst_params.replace(time_to_evolve=15)
+            sst_params = sst_params.replace(time_to_evolve=10)
 
             # --- MJX model init ---
             model = mujoco.MjModel.from_xml_path("models/eeonly.xml")

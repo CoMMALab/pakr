@@ -14,7 +14,7 @@ actions = jnp.array(np.load("solution_actions.npy"))
 initial_state_arr = np.load("solution_states.npy")[0]
 
 T = actions.shape[0]
-SUBSTEPS = 15
+SUBSTEPS = 10
 
 @jax.jit
 def high_freq_rollout(model, initial_state, action_seq):
