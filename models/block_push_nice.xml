@@ -1,0 +1,40 @@
+<mujoco model="ball_block_2d">
+  <option timestep="0.03" gravity="0 0 -9.81"/>
+  <size njmax="20" nconmax="10"/>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1=".2 .3 .4" rgb2=".1 .2 .3" width="300" height="300" mark="cross" markrgb=".8 .8 .8"/>
+    <material name="floor_mat" texture="grid" texrepeat="5 5" reflectance=".2"/>
+    
+    <material name="ball_mat" rgba="0 0.8 0.2 1" shininess="0.8" specular="0.5"/>
+    <material name="block_mat" rgba="1 0.1 0.1 1" shininess="0.3" specular="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light directional="true" diffuse=".8 .8 .8" pos="0 0 5" dir="0 0 -1" specular="0.3 0.3 0.3"/>
+    
+    <geom type="plane" size="2 2 0.1" material="floor_mat"/>
+    
+    <geom type="cylinder" pos="0.3 0.0 0.001" size="0.05 0.001" rgba="1 1 0 0.5" contype="0" conaffinity="0"/> 
+
+    <body name="ball" pos="-0.1 0.0 0.05">
+      <joint name="ball_x" type="slide" axis="1 0 0" damping="2"/>
+      <joint name="ball_y" type="slide" axis="0 1 0" damping="2"/>
+      <inertial pos="0 0 0" mass="0.1" diaginertia="0.0005 0.0005 0.0005"/>
+      <geom type="sphere" size="0.05" material="ball_mat"/>
+    </body>
+
+    <body name="block" pos="0.0 0 0.05">
+      <joint name="block_x" type="slide" axis="1 0 0" damping="1"/>
+      <joint name="block_y" type="slide" axis="0 1 0" damping="1"/>
+      <joint name="block_yaw" type="hinge" axis="0 0 1" damping="0.2"/>
+      <inertial pos="0 0 0" mass="0.3" diaginertia="0.002 0.002 0.002"/>
+      <geom type="box" size="0.05 0.05 0.05" material="block_mat"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor joint="ball_x" ctrlrange="-8 8"/>
+    <motor joint="ball_y" ctrlrange="-8 8"/>
+  </actuator>
+</mujoco>

@@ -337,7 +337,7 @@ if __name__ == "__main__":
     )
 
     init_state = init_state.at[0:2].set(
-        jnp.array([0.3, 0.0], dtype=jnp.float32)
+        jnp.array([-0.3, 0.0], dtype=jnp.float32)
     )
 
     print(init_state, sst_params.goal.x, sst_params.goal.y, sst_params.goal.z)
@@ -543,8 +543,8 @@ if __name__ == "__main__":
             path, actions = extract_sol(tree, goal_mask, start_idx)
             print(path)
             print(actions)
-            np.save("solution_actions.npy", np.array(actions))
-            np.save("solution_states.npy", np.array(path))
+            np.save("visuals/solution_actions1.npy", np.array(actions))
+            np.save("visuals/solution_states1.npy", np.array(path))
             break
 
 

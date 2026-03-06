@@ -90,32 +90,42 @@ def visualize_animated_trajectories(env_path, trajectories, output_name="videos/
     gx, gy, gz, gi, gj, gk = get_sphere_mesh(0.8, 0.95, 0.9)
     fig.add_trace(go.Mesh3d(x=gx, y=gy, z=gz, i=gi, j=gj, k=gk, color='limegreen', opacity=0.6, name='Goal'))
 
-    bucket_opacities = [1.0, 0.6, 0.4, 0.2, 0.1]
     
     # 3. Create Frames
+    # 3. Create Frames
     frames = []
-    for b in range(5):  # 5 buckets
+    
+    for b in range(5):  # Current active bucket
         frame_traces = []
         for traj_idx in range(50):
-            # Determine which bucket this trajectory belongs to
             target_bucket = traj_idx // 10
             
-            # Logic: If the trajectory is in the 'current' bucket, use 1.0, 
-            # otherwise use the fading sequence based on how far back it is.
-            # Here, we set the opacity based on your specific bucket requirement:
-            opacity = bucket_opacities[target_bucket] if target_bucket == b else 0.1
+            # Logic: 1.0 if active, 0.1 if background
+            is_active = (target_bucket == b)
+            opacity = 1.0 if is_active else 0.1
+            width = 8.0 if is_active else 2.0
+            
+            # Use a slightly softer green for background lines to reduce visual noise
+            color = f'rgba(50, 205, 50, {opacity})'
             
             frame_traces.append(go.Scatter3d(
                 x=trajectories[traj_idx][:, 0],
                 y=trajectories[traj_idx][:, 1],
                 z=trajectories[traj_idx][:, 2],
                 mode='lines',
-                line=dict(color=f'rgba(50, 205, 50, {opacity})', width=5),
+                line=dict(color=color, width=width),
                 showlegend=False
             ))
         frames.append(go.Frame(data=frame_traces, name=f"Bucket_{b}"))
 
     fig.frames = frames
+
+    # Initial setup in the base figure must match the frame structure (50 empty traces)
+    for traj in trajectories:
+        fig.add_trace(go.Scatter3d(
+            x=traj[:, 0], y=traj[:, 1], z=traj[:, 2],
+            mode='lines', line=dict(color='rgba(0,0,0,0)', width=0), showlegend=False
+        ))
     
     # Initial display: Add the first batch (Bucket 0) to the base figure so it's not empty
     # ... (Add the first 10 trajectories to fig as traces) ...
