@@ -45,3 +45,11 @@ RUN pip3 install --no-cache-dir \
     jupyterlab \
     seaborn \
     scikit-learn \
+    plotly \
+    jaxopt
+
+ARG USER_ID=1013
+ARG GROUP_ID=1013
+RUN groupadd -g ${GROUP_ID} appuser && \
+    useradd -u ${USER_ID} -g appuser -m appuser
+USER appuser
