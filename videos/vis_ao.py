@@ -90,34 +90,49 @@ def visualize_animated_trajectories(env_path, trajectories, output_name="videos/
     gx, gy, gz, gi, gj, gk = get_sphere_mesh(0.8, 0.95, 0.9)
     fig.add_trace(go.Mesh3d(x=gx, y=gy, z=gz, i=gi, j=gj, k=gk, color='limegreen', opacity=0.6, name='Goal'))
 
+    bucket_opacities = [1.0, 0.6, 0.4, 0.2, 0.1]
+    
     # 3. Create Frames
-    # We add all obstacles and static items to 'data' for the base figure
-    # Frames will only contain the growing list of trajectories
     frames = []
-    for b in range(1, (len(trajectories) // 10) + 1):
-        current_batch = trajectories[:b*10]
-        traces = []
-        for idx, traj in enumerate(current_batch):
-            traces.append(go.Scatter3d(
-                x=traj[:, 0], y=traj[:, 1], z=traj[:, 2],
-                mode='lines', line=dict(color='limegreen', width=7.5),
+    for b in range(5):  # 5 buckets
+        frame_traces = []
+        for traj_idx in range(50):
+            # Determine which bucket this trajectory belongs to
+            target_bucket = traj_idx // 10
+            
+            # Logic: If the trajectory is in the 'current' bucket, use 1.0, 
+            # otherwise use the fading sequence based on how far back it is.
+            # Here, we set the opacity based on your specific bucket requirement:
+            opacity = bucket_opacities[target_bucket] if target_bucket == b else 0.1
+            
+            frame_traces.append(go.Scatter3d(
+                x=trajectories[traj_idx][:, 0],
+                y=trajectories[traj_idx][:, 1],
+                z=trajectories[traj_idx][:, 2],
+                mode='lines',
+                line=dict(color=f'rgba(50, 205, 50, {opacity})', width=5),
                 showlegend=False
             ))
-        frames.append(go.Frame(data=traces, name=f"Batch_{b}"))
+        frames.append(go.Frame(data=frame_traces, name=f"Bucket_{b}"))
 
     fig.frames = frames
+    
+    # Initial display: Add the first batch (Bucket 0) to the base figure so it's not empty
+    # ... (Add the first 10 trajectories to fig as traces) ...
 
-    # 4. Final Layout
+    # 4. Final Layout with Play Button
     fig.update_layout(
-        scene=dict(
-            xaxis=dict(showbackground=True, backgroundcolor="rgb(240,240,240)"),
-            yaxis=dict(showbackground=True, backgroundcolor="rgb(240,240,240)"),
-            zaxis=dict(showbackground=True, backgroundcolor="rgb(240,240,240)"),
-            aspectmode='data'
-        ),
         updatemenus=[dict(
             type="buttons",
-            buttons=[dict(label="Play", method="animate", args=[None, {"frame": {"duration": 1000, "redraw": True}, "fromcurrent": True}])]
+            buttons=[dict(
+                label="Play", 
+                method="animate", 
+                args=[None, {
+                    "frame": {"duration": 2000, "redraw": True}, 
+                    "fromcurrent": True,
+                    "transition": {"duration": 300}
+                }]
+            )]
         )]
     )
     
