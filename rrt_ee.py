@@ -488,8 +488,8 @@ if __name__ == "__main__":
     # print(f"Iterations: {iterations}, tree size: {size}, goal reached: {jnp.sum(goal_mask)}")
 
     best_dist = jnp.inf
-    #ky = np.random.randint(0, 1e6)
-    key = jax.random.PRNGKey(0)
+    ky = np.random.randint(0, 1e6)
+    key = jax.random.PRNGKey(ky)
     for i in range(200):
         key, subkey = jax.random.split(key)
         start_p = time.perf_counter()
