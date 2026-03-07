@@ -1,18 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from matplotlib.animation import FuncAnimation, FFMpegWriter
 from flax import struct
 from params import Position
 from vine.load_env import load_box_config
-
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from matplotlib.animation import FuncAnimation, FFMpegWriter
-from flax import struct
-from params import Position
-from vine.load_env import load_box_config
+from matplotlib.animation import FuncAnimation, PillowWriter
 
 def visualize_trajectory(traj_path, obstacles, sst_params, sim_params):
     # 1. Load data
@@ -68,9 +60,10 @@ def visualize_trajectory(traj_path, obstacles, sst_params, sim_params):
     
     # Save as MP4 (Requires ffmpeg installed on system)
 
-    writer = FFMpegWriter(fps=20, metadata=dict(artist='Me'), bitrate=1800)
-    ani.save("videos/vine_growth.mp4", writer=writer)
-    print("Saved to videos/vine_growth.mp4")
+    print("Saving animation as GIF...")
+    writer = PillowWriter(fps=20)
+    ani.save("videos/vine_growth.gif", writer=writer)
+    print("Successfully saved to videos/vine_growth.gif")
 
 
 
