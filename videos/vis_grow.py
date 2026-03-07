@@ -98,28 +98,46 @@ def visualize_single_bucket_animation(env_path, bucket_trajectories, output_name
         color='limegreen', opacity=0.6, name='Goal'
     ))
 
-    # 3. Create animation frames (only updating trajectory lines)
+# ... (Keep your mesh and start/goal code as is)
+
+    # 3. Add initial EMPTY traces for trajectories AFTER obstacles
+    # Count how many traces we already have (Obstacles + Start + Goal)
+    base_trace_count = len(fig.data) 
+    
+    for _ in bucket_trajectories:
+        fig.add_trace(go.Scatter3d(
+            x=[], y=[], z=[], 
+            mode='lines',
+            line=dict(color='rgba(50,205,50,1.0)', width=8), # Solid Green
+            opacity=1.0
+        ))
+
+    # 4. Create animation frames
     max_points = max(len(t) for t in bucket_trajectories)
     step = 5
     frames = []
     
+    # Identify which trace indices we are animating
+    traj_indices = list(range(base_trace_count, base_trace_count + len(bucket_trajectories)))
+
     for i in range(0, max_points, step):
         frame_data = []
         for traj in bucket_trajectories:
             curr = traj[:min(i+step, len(traj))]
             frame_data.append(go.Scatter3d(
-                x=curr[:,0], y=curr[:,1], z=curr[:,2],
-                mode='lines',
-                line=dict(color='rgba(50,205,50,1.0)', width=8)
+                x=curr[:,0], y=curr[:,1], z=curr[:,2]
             ))
-        frames.append(go.Frame(data=frame_data, name=f"step_{i}"))
+        
+        # KEY FIX: Tell the frame specifically to update the trajectory indices
+        frames.append(go.Frame(
+            data=frame_data, 
+            name=f"step_{i}",
+            traces=traj_indices 
+        ))
 
     fig.frames = frames
 
-    # 4. Add initial trace state
-    for _ in bucket_trajectories:
-        fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode='lines'))
-
+    # Set redraw=True in updatemenus if the camera keeps resetting or objects flicker
     fig.update_layout(
         updatemenus=[dict(
             type="buttons",
@@ -127,16 +145,12 @@ def visualize_single_bucket_animation(env_path, bucket_trajectories, output_name
                 label="Play",
                 method="animate",
                 args=[None, {
-                    "frame": {"duration": 70, "redraw": False},
+                    "frame": {"duration": 50, "redraw": False},
                     "fromcurrent": True,
-                    "transition": {"duration": 0}
                 }]
             )]
-        )],
-        scene=dict(aspectmode='data')
+        )]
     )
-
-    fig.write_html(output_name)
 
 
 def run_all_buckets(npz_path, env_path):
