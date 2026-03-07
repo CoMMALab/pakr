@@ -69,22 +69,22 @@ def visualize_single_bucket_animation(env_path, bucket_trajectories, output_name
 
     fig = go.Figure()
 
-    # 1. Render all obstacles once
-    for box in all_trees:
-        x, y, z, i, j, k = create_box_mesh(*box)
-        fig.add_trace(go.Mesh3d(
-            x=x, y=y, z=z, i=i, j=j, k=k,
-            color='lightgrey',
-            opacity=0.3,
-            flatshading=True,
-            lighting=dict(
-                ambient=0.05, diffuse=1.0, roughness=1.0,
-                specular=0.0, fresnel=0.0
-            ),
-            lightposition=dict(x=5, y=5, z=10),
-            showlegend=False
-        ))
-        add_box_edges(fig, x, y, z)
+    # # 1. Render all obstacles once
+    # for box in all_trees:
+    #     x, y, z, i, j, k = create_box_mesh(*box)
+    #     fig.add_trace(go.Mesh3d(
+    #         x=x, y=y, z=z, i=i, j=j, k=k,
+    #         color='lightgrey',
+    #         opacity=0.3,
+    #         flatshading=True,
+    #         lighting=dict(
+    #             ambient=0.05, diffuse=1.0, roughness=1.0,
+    #             specular=0.0, fresnel=0.0
+    #         ),
+    #         lightposition=dict(x=5, y=5, z=10),
+    #         showlegend=False
+    #     ))
+    #     add_box_edges(fig, x, y, z)
 
     # 2. Add Start/Goal traces once
     fig.add_trace(go.Scatter3d(
