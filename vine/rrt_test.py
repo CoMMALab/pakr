@@ -426,7 +426,7 @@ def visualize_tree(tree, obstacles, sst_params, sim_params, iteration):
     ax.set_yticks([])
     ax.set_aspect('equal')
     
-    plt.savefig(f"vine/results/rrt_long{iteration:02d}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"vine/results/rrt_vis{iteration:02d}.png", dpi=300, bbox_inches='tight')
     plt.close(fig)
 from flax import struct
 import jax.numpy as jnp
@@ -457,7 +457,7 @@ class SSTparams:
     start: Position
     goal: Position
     goal_radius: float
-    time_to_evolve: int = 70
+    time_to_evolve: int = 100
 
 if __name__ == "__main__":
     cfg = load_box_config('vine/envs/env_live.txt')
