@@ -23,7 +23,7 @@ print(f"Loaded trajectory with {len(trajectory)} frames.")
 # 3. Playback Loop
 with mujoco.viewer.launch_passive(model, data) as viewer:
     viewer.cam.distance = 6.0 
-    time.sleep(0.7)
+    time.sleep(3)
     # Optional: Reset camera or settings here
 
     
@@ -43,6 +43,6 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         # Match the simulation timestep for real-time speed
         time.sleep(model.opt.timestep)
 
-    time.sleep(1.0)  # Pause at the end of the trajectory
+    time.sleep(3)  # Pause at the end of the trajectory
 
 print("Playback finished.")
