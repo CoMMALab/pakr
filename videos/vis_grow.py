@@ -145,7 +145,7 @@ def visualize_single_bucket_animation(env_path, bucket_trajectories, output_name
                 label="Play",
                 method="animate",
                 args=[None, {
-                    "frame": {"duration": 50, "redraw": False},
+                    "frame": {"duration": 50, "redraw": True},
                     "fromcurrent": True,
                 }]
             )]
