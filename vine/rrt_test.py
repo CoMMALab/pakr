@@ -518,7 +518,7 @@ if __name__ == "__main__":
     rng_key = jax.random.PRNGKey(42)
     
     print(f"Starting 10 iterations of RRT...")
-    for i in range(15):
+    for i in range(10):
         # Run a single batch iteration
         tree, rng_key, goal_mask, goal_count, states_end, start_idx = rrt_iteration(
             tree, rng_key, obstacles, sst_params, sim_params, callables
@@ -532,7 +532,8 @@ if __name__ == "__main__":
         print(f"Iteration {i+1}: Tree size = {tree.tree_size}, New nodes = {tree.tree_size - start_idx}, Goals found in batch = {goal_count}")
         if goal_count > 0:
             print(f"Goal found at iteration {i+1}!")
-            solution = states_end[goal_mask]
+            solution_idx = jnp.argmax(goal_mask) + start_idx
+            solution = tree.actions[solution_idx]
             np.save(f"vine/results/solution_iter_{i+1}.npy", solution)
     # dummy_tree = rrtree.KinoTree.init(MAX_TREE_SIZE, sim_params.max_bodies)
     # tree, _ = rrtree.add_nodes(dummy_tree, init_state, jnp.zeros((sim_params.max_bodies, 2)), -1, 0.0, 1)
