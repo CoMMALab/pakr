@@ -274,7 +274,7 @@ if __name__ == "__main__":
 
             state = propagate_acrobot(state[None, :], action, sim_params.dt, None)[0]
 
-            if step % 10 == 0:
+            if step % 1 == 0:
                 traj.append(np.array(state))
 
     traj = np.array(traj)

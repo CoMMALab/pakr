@@ -6,7 +6,6 @@
 
   <asset>
 
-    <!-- floor texture -->
     <texture name="grid" type="2d" builtin="checker"
              rgb1=".2 .3 .4" rgb2=".1 .2 .3"
              width="300" height="300"
@@ -17,7 +16,6 @@
               texrepeat="5 5"
               reflectance=".2"/>
 
-    <!-- acrobot materials -->
     <material name="link1_mat"
               rgba="0.2 0.6 1 1"
               shininess="0.7"
@@ -28,7 +26,6 @@
               shininess="0.7"
               specular="0.4"/>
 
-    <!-- goal ghost -->
     <material name="goal_mat"
               rgba="0 1 0 0.25"
               shininess="0.1"
@@ -38,19 +35,16 @@
 
   <worldbody>
 
-    <!-- lighting -->
     <light directional="true"
            diffuse=".8 .8 .8"
            pos="0 0 5"
            dir="0 0 -1"
            specular="0.3 0.3 0.3"/>
 
-    <!-- floor -->
     <geom type="plane"
           size="5 5 0.1"
           material="floor_mat"/>
 
-    <!-- pivot marker -->
     <geom type="sphere"
           size="0.04"
           pos="0 0 0"
@@ -59,24 +53,15 @@
           conaffinity="0"/>
 
     <!-- ========================= -->
-    <!-- ACTUAL ACROBOT -->
+    <!-- ACROBOT -->
     <!-- ========================= -->
 
-    <body name="link1" pos="0 0 0">
+    <!-- rotate base frame so q1=0 points DOWN -->
+    <body name="base" pos="0 0 0" euler="0 0 -90">
 
-      <joint name="q1"
-             type="hinge"
-             axis="0 0 1"
-             damping="0.1"/>
+      <body name="link1" pos="0 0 0">
 
-      <geom type="capsule"
-            fromto="0 0 0   1 0 0"
-            size="0.05"
-            material="link1_mat"/>
-
-      <body name="link2" pos="1 0 0">
-
-        <joint name="q2"
+        <joint name="q1"
                type="hinge"
                axis="0 0 1"
                damping="0.1"/>
@@ -84,39 +69,54 @@
         <geom type="capsule"
               fromto="0 0 0   1 0 0"
               size="0.05"
-              material="link2_mat"/>
+              material="link1_mat"/>
+
+        <body name="link2" pos="1 0 0">
+
+          <joint name="q2"
+                 type="hinge"
+                 axis="0 0 1"
+                 damping="0.1"/>
+
+          <geom type="capsule"
+                fromto="0 0 0   1 0 0"
+                size="0.05"
+                material="link2_mat"/>
+
+        </body>
 
       </body>
+
     </body>
 
 
     <!-- ========================= -->
     <!-- GOAL POSE (visual only) -->
+    <!-- planner goal = (π, 0) -->
+    <!-- becomes (π/2, 0) in MuJoCo -->
     <!-- ========================= -->
-    <!-- goal: q1 = pi, q2 = 0 -->
 
-    <body name="goal_link1"
-          pos="0 0 0"
-          quat="0 0 0 1">
+    <body name="goal_base" pos="0 0 0" euler="0 0 0">
 
-      <!-- rotate 180 deg around Z -->
-      <joint type="hinge" axis="0 0 1" limited="false"/>
-
-      <geom type="capsule"
-            fromto="0 0 0  -1 0 0"
-            size="0.04"
-            material="goal_mat"
-            contype="0"
-            conaffinity="0"/>
-
-      <body pos="-1 0 0">
+      <body euler="0 0 90">
 
         <geom type="capsule"
-              fromto="0 0 0  -1 0 0"
+              fromto="0 0 0 1 0 0"
               size="0.04"
               material="goal_mat"
               contype="0"
               conaffinity="0"/>
+
+        <body pos="1 0 0">
+
+          <geom type="capsule"
+                fromto="0 0 0 1 0 0"
+                size="0.04"
+                material="goal_mat"
+                contype="0"
+                conaffinity="0"/>
+
+        </body>
 
       </body>
 

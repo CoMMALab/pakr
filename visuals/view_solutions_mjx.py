@@ -4,12 +4,16 @@ import mujoco
 import mujoco.viewer
 
 # 1. Load Model and Data
-model = mujoco.MjModel.from_xml_path("models/block_push_nice.xml")
+#model = mujoco.MjModel.from_xml_path("models/block_push_nice.xml")
+#model = mujoco.MjModel.from_xml_path("models/acrobot_nice.xml")
+model = mujoco.MjModel.from_xml_path("models/cartpole_nice.xml")
 data = mujoco.MjData(model)
         
 # 2. Load Pre-computed MJX Trajectory
 # Expected shape: (Total Steps, nq + nv)
-trajectory = np.load("visuals/mjx_full_trajectory1.npy")
+#trajectory = np.load("visuals/mjx_full_trajectory1.npy")
+# trajectory = np.load("videos/acrobot_traj.npy")
+trajectory = np.load("videos/cartpole_traj.npy")
 nq = model.nq
 state0 = trajectory[0]  # Initial state for reference
 data.qpos[:] = state0[:nq]

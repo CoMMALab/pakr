@@ -1,0 +1,122 @@
+<mujoco model="Cartpole">
+
+  <compiler angle="radian" inertiafromgeom="true"/>
+
+  <!-- ========= Defaults ========= -->
+  <default>
+    <joint armature="0" damping="0.01" frictionloss="0"/>
+    <geom density="1000" friction="1 0.1 0.1" contype="0" conaffinity="0"/>
+  </default>
+
+  <!-- ========= Simulation Options ========= -->
+  <option
+      timestep="0.02"
+      iterations="1"
+      ls_iterations="4"
+      solver="Newton"
+      jacobian="dense"
+      integrator="Euler"/>
+
+  <!-- ========= Visual Settings ========= -->
+  <visual>
+    <headlight diffuse="0.8 0.8 0.8" ambient="0.3 0.3 0.3"/>
+    <rgba haze="0.15 0.2 0.25 1"/>
+  </visual>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker"
+             rgb1="0.2 0.3 0.35" rgb2="0.1 0.15 0.2"
+             width="512" height="512"/>
+
+    <material name="floor" texture="grid" texrepeat="6 6"/>
+
+    <material name="cart_mat" rgba="0.2 0.5 0.9 1"/>
+    <material name="pole_mat" rgba="0.9 0.3 0.2 1"/>
+    <material name="rail_mat" rgba="0.7 0.7 0.7 1"/>
+  </asset>
+
+  <!-- ========= World ========= -->
+  <worldbody>
+
+    <light pos="0 0 5" dir="0 0 -1" diffuse="1 1 1"/>
+
+    <geom name="floor"
+          type="plane"
+          size="20 20 0.1"
+          material="floor"
+          contype="0"
+          conaffinity="0"/>
+
+    <!-- Track rails -->
+    <geom name="rail_left"
+          type="box"
+          pos="0 0.25 0"
+          size="5 0.02 0.02"
+          material="rail_mat"/>
+
+    <geom name="rail_right"
+          type="box"
+          pos="0 -0.25 0"
+          size="5 0.02 0.02"
+          material="rail_mat"/>
+
+    <!-- ========= Cart ========= -->
+    <body name="cart" pos="0 0 0.1">
+
+      <joint name="slider"
+             type="slide"
+             axis="1 0 0"
+             range="-4.8 4.8"/>
+
+      <geom name="cart"
+            type="box"
+            size="0.25 0.15 0.1"
+            material="cart_mat"
+            mass="1.0"/>
+
+      <!-- pole hinge marker -->
+      <geom type="sphere"
+            size="0.03"
+            rgba="0.1 0.1 0.1 1"/>
+
+      <!-- ========= Pole ========= -->
+      <body name="pole" pos="0 0 0">
+
+        <joint name="hinge"
+               type="hinge"
+               axis="0 1 0"/>
+
+        <geom name="pole"
+              type="capsule"
+              size="0.03 0.6"
+              pos="0 0 0.6"
+              material="pole_mat"
+              mass="0.1"/>
+
+        <!-- pole tip -->
+        <geom type="sphere"
+              size="0.05"
+              pos="0 0 1.2"
+              rgba="0.95 0.9 0.2 1"/>
+
+      </body>
+    </body>
+
+  </worldbody>
+
+  <!-- ========= Camera ========= -->
+  <worldbody>
+    <camera name="side"
+            pos="0 -4 1.5"
+            xyaxes="1 0 0 0 0 1"/>
+  </worldbody>
+
+  <!-- ========= Actuator ========= -->
+  <actuator>
+    <motor
+        name="force_actuator"
+        joint="slider"
+        ctrlrange="-10 10"/>
+  </actuator>
+
+</mujoco>
