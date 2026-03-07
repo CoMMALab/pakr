@@ -23,41 +23,6 @@ class KinoTree:
         )
 
 
-@jax.jit
-def aadd_nodes(tree, new_states, new_actions, parent_idxs, new_costs, N):
-    """
-    Add new nodes to the tree. Returns a new KinoTree (functional update).
-    
-    Args:
-        tree        : KinoTree
-        new_states  : (N, state_dim)
-        new_actions : (N, action_dim)
-        parent_idxs : (N,)
-        new_costs   : (N,)
-    """
-    new_states = jnp.atleast_2d(new_states)
-    new_actions = jnp.atleast_2d(new_actions)
-    new_costs = jnp.atleast_1d(new_costs)
-    parent_idxs = jnp.atleast_1d(parent_idxs)
-    
-    start = tree.tree_size
-
-    states = lax.dynamic_update_slice(tree.states, new_states, (start, 0))
-    actions = lax.dynamic_update_slice(tree.actions, new_actions, (start, 0))
-    parents = lax.dynamic_update_slice(tree.parents, parent_idxs, (start,))
-    costs = lax.dynamic_update_slice(tree.costs, new_costs, (start,))
-    
-    tree_size = start + N
-
-    return tree.replace(
-        states=states,
-        actions=actions,
-        parents=parents,
-        costs=costs,
-        tree_size=tree_size
-    ), start
-
-
 # In /workspace/vine/rrtree.py
 
 def add_nodes(tree, states, actions, parents, costs, n):
