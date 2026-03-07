@@ -10,6 +10,7 @@ def visualize_trajectory(traj_path, obstacles, sst_params, sim_params):
     # 1. Load data
     # Shape: (Steps, Tips(3) + CSpace(max_bodies+1) + Bodies(1))
     data = np.load(traj_path)
+    print(len(data))
     
     fig, ax = plt.subplots(figsize=(8, 8))
     
@@ -30,7 +31,7 @@ def visualize_trajectory(traj_path, obstacles, sst_params, sim_params):
     def update(frame):
         ax.clear()
         draw_env()
-        
+        print(f"Visualizing step {frame}/{len(data)}")
         state = data[frame]
         angles = state[3:33] # CSpace
         tip_len = state[33]
