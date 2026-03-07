@@ -11,7 +11,7 @@ data = mujoco.MjData(model)
         
 # 2. Load Pre-computed MJX Trajectory
 # Expected shape: (Total Steps, nq + nv)
-# trajectory = np.load("visuals/mjx_full_trajectory.npy")
+#trajectory = np.load("visuals/mjx_full_trajectory.npy")
 trajectory = np.load("videos/acrobot_traj.npy")
 #trajectory = np.load("videos/cartpole_traj.npy")
 nq = model.nq
@@ -22,9 +22,10 @@ print(f"Loaded trajectory with {len(trajectory)} frames.")
 
 # 3. Playback Loop
 with mujoco.viewer.launch_passive(model, data) as viewer:
-    time.sleep(3)
-    # Optional: Reset camera or settings here
     viewer.cam.distance = 6.0 
+    time.sleep(0.7)
+    # Optional: Reset camera or settings here
+
     
     for state in trajectory:
         if not viewer.is_running():
@@ -41,5 +42,7 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         
         # Match the simulation timestep for real-time speed
         time.sleep(model.opt.timestep)
+
+    time.sleep(1.0)  # Pause at the end of the trajectory
 
 print("Playback finished.")

@@ -53,7 +53,7 @@ def visualize_trajectory(traj_path, obstacles, sst_params, sim_params):
     data = np.load(traj_path)
 
     # Only use first 630 frames and every 3rd frame
-    data = data[:630:3]
+    data = data[:627:3]
 
     print("Frames used:", len(data))
 
