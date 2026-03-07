@@ -59,8 +59,6 @@ def create_box_mesh(x1, y1, z1, x2, y2, z2):
     return x,y,z,i,j,k
 
 
-
-
 def visualize_single_bucket_animation(env_path, current_bucket, history_buckets, output_name):
     all_trees = np.loadtxt(env_path, delimiter=',', skiprows=1)
     if all_trees.ndim == 1:
@@ -68,22 +66,22 @@ def visualize_single_bucket_animation(env_path, current_bucket, history_buckets,
 
     fig = go.Figure()
 
-    # 1. Render all obstacles once (COMMENTED OUT AS REQUESTED)
-    # for box in all_trees:
-    #     x, y, z, i, j, k = create_box_mesh(*box)
-    #     fig.add_trace(go.Mesh3d(
-    #         x=x, y=y, z=z, i=i, j=j, k=k,
-    #         color='lightgrey',
-    #         opacity=0.3,
-    #         flatshading=True,
-    #         lighting=dict(
-    #             ambient=0.05, diffuse=1.0, roughness=1.0,
-    #             specular=0.0, fresnel=0.0
-    #         ),
-    #         lightposition=dict(x=5, y=5, z=10),
-    #         showlegend=False
-    #     ))
-    #     add_box_edges(fig, x, y, z)
+    # 1. Render all obstacles once (REMAINING COMMENTED OUT AS REQUESTED)
+    for box in all_trees:
+        x, y, z, i, j, k = create_box_mesh(*box)
+        fig.add_trace(go.Mesh3d(
+            x=x, y=y, z=z, i=i, j=j, k=k,
+            color='lightgrey',
+            opacity=0.3,
+            flatshading=True,
+            lighting=dict(
+                ambient=0.05, diffuse=1.0, roughness=1.0,
+                specular=0.0, fresnel=0.0
+            ),
+            lightposition=dict(x=5, y=5, z=10),
+            showlegend=False
+        ))
+        add_box_edges(fig, x, y, z)
 
     # 2. Add Start/Goal traces once
     fig.add_trace(go.Scatter3d(
@@ -97,37 +95,33 @@ def visualize_single_bucket_animation(env_path, current_bucket, history_buckets,
         color='limegreen', opacity=0.6, name='Goal'
     ))
 
-    # 3. Add History Buckets (OPTIMIZED: 1 Trace per Bucket)
+    # 3. Add History Buckets (Static, non-animated)
+    # Tiers: [.6, .4, .2, .1]. Most recent history gets highest opacity.
     opacity_tiers = [0.6, 0.4, 0.2, 0.1]
     
+    # We iterate backwards through history_buckets (index -1 is the most recent)
     for idx, bucket in enumerate(reversed(history_buckets)):
+        # Fallback to 0.05 if we run out of tiers
         alpha = opacity_tiers[idx] if idx < len(opacity_tiers) else 0.05
-        # Combine all trajectories in one bucket using None to break the line
-        hx, hy, hz = [], [], []
         for traj in bucket:
-            hx.extend(traj[:, 0].tolist() + [None])
-            hy.extend(traj[:, 1].tolist() + [None])
-            hz.extend(traj[:, 2].tolist() + [None])
-            
-        fig.add_trace(go.Scatter3d(
-            x=hx, y=hy, z=hz,
-            mode='lines',
-            line=dict(color=f'rgba(50,205,50,{alpha})', width=3),
-            showlegend=False,
-            hoverinfo='none'
-        ))
+            fig.add_trace(go.Scatter3d(
+                x=traj[:, 0], y=traj[:, 1], z=traj[:, 2],
+                mode='lines',
+                line=dict(color=f'rgba(50,205,50,{alpha})', width=3),
+                showlegend=False,
+                hoverinfo='none'
+            ))
 
     # 4. Add initial EMPTY traces for the CURRENT bucket animation
-    # We capture the exact index right before adding
     base_trace_count = len(fig.data) 
     
     for _ in current_bucket:
         fig.add_trace(go.Scatter3d(
             x=[], y=[], z=[], 
             mode='lines',
-            line=dict(color='rgba(50,205,50,1.0)', width=8),
+            line=dict(color='rgba(50,205,50,1.0)', width=8), # Solid Green
             opacity=1.0,
-            showlegend=False
+            name="Current Growth"
         ))
 
     # 5. Create animation frames
@@ -135,13 +129,11 @@ def visualize_single_bucket_animation(env_path, current_bucket, history_buckets,
     step = 5
     frames = []
     
-    # Calculate indices based on the traces we just added
     traj_indices = list(range(base_trace_count, base_trace_count + len(current_bucket)))
 
     for i in range(0, max_points + step, step):
         frame_data = []
         for traj in current_bucket:
-            # We must provide x, y, AND z for redraw:False to work correctly
             curr = traj[:min(i, len(traj))]
             frame_data.append(go.Scatter3d(
                 x=curr[:,0], y=curr[:,1], z=curr[:,2]
@@ -155,24 +147,22 @@ def visualize_single_bucket_animation(env_path, current_bucket, history_buckets,
 
     fig.frames = frames
 
-    # 6. Final Layout with Performance Tweaks
     fig.update_layout(
         scene=dict(
-            xaxis=dict(range=[0, 1], autorange=False),
-            yaxis=dict(range=[0, 1], autorange=False),
-            zaxis=dict(range=[0, 1], autorange=False),
+            xaxis=dict(range=[0, 1]),
+            yaxis=dict(range=[0, 1]),
+            zaxis=dict(range=[0, 1]),
             aspectmode='cube'
         ),
-        hovermode=False,
         updatemenus=[dict(
             type="buttons",
             buttons=[dict(
                 label="Play",
                 method="animate",
                 args=[None, {
-                    "frame": {"duration": 30, "redraw": False},
+                    "frame": {"duration": 50, "redraw": True},
                     "fromcurrent": True,
-                    "transition": {"duration": 0, "easing": "linear"}
+                    "transition": {"duration": 0}
                 }]
             )]
         )]
@@ -186,16 +176,27 @@ def run_all_buckets(npz_path, env_path):
     sorted_keys = sorted(data_container.files, key=lambda x: int(x.split('_')[1]))
     all_trajectories = [data_container[key] for key in sorted_keys]
 
+    # Organize data into buckets of 10
+    buckets_list = []
     trajs_per_bucket = 10
     num_buckets = len(all_trajectories) // trajs_per_bucket
-    buckets_list = [all_trajectories[b*10 : (b+1)*10] for b in range(num_buckets)]
 
     for b in range(num_buckets):
+        buckets_list.append(all_trajectories[b*trajs_per_bucket : (b+1)*trajs_per_bucket])
+
+    # Generate an HTML for each bucket
+    for b in range(num_buckets):
+        current_bucket = buckets_list[b]
+        history_buckets = buckets_list[:b] # All buckets before index b
+
+        print(f"Visualizing Bucket {b+1} with {len(history_buckets)} historical buckets...")
+
         visualize_single_bucket_animation(
             env_path,
-            buckets_list[b],
-            buckets_list[:b],
+            current_bucket,
+            history_buckets,
             f"videos/bucket_{b+1}_growth.html"
         )
+
 
 run_all_buckets('videos/trajectories_data.npz', 'envs/tree.csv')
