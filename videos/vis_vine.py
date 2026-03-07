@@ -54,7 +54,12 @@ def visualize_trajectory(traj_path, obstacles, sst_params, sim_params):
 
     # Only use first 630 frames and every 3rd frame
     data = data[:558:3]
+    last_frame = data[-1]
+    pause_frames = np.tile(last_frame, (15, 1))
+    data = np.vstack((data, pause_frames))
+    # ------------------------------------
 
+    print("Frames used (including pause):", len(data))
     print("Frames used:", len(data))
 
     fig, ax = plt.subplots(figsize=(8, 8))
