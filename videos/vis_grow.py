@@ -69,7 +69,7 @@ def visualize_single_bucket_animation(env_path, bucket_trajectories, output_name
 
     fig = go.Figure()
 
-    # # 1. Render all obstacles once
+    # 1. Render all obstacles once
     # for box in all_trees:
     #     x, y, z, i, j, k = create_box_mesh(*box)
     #     fig.add_trace(go.Mesh3d(
@@ -98,7 +98,7 @@ def visualize_single_bucket_animation(env_path, bucket_trajectories, output_name
         color='limegreen', opacity=0.6, name='Goal'
     ))
 
-# ... (Keep your mesh and start/goal code as is)
+    # ... (Keep your mesh and start/goal code as is)
 
     # 3. Add initial EMPTY traces for trajectories AFTER obstacles
     # Count how many traces we already have (Obstacles + Start + Goal)
@@ -152,6 +152,8 @@ def visualize_single_bucket_animation(env_path, bucket_trajectories, output_name
         )]
     )
 
+    fig.write_html(output_name)
+
 
 def run_all_buckets(npz_path, env_path):
 
@@ -169,7 +171,7 @@ def run_all_buckets(npz_path, env_path):
         visualize_single_bucket_animation(
             env_path,
             bucket_trajs,
-            f"videos/bucket_{b+1}_growth.html"
+            f"videos/bucket_{b+2}_growth.html"
         )
 
 
