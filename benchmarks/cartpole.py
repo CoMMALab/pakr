@@ -138,7 +138,7 @@ def make_cartpole_rollout(prop_fn):
 
 SIM_PARAMS_RESERVED = None
 CALLABLES_RESERVED = None
-TIERS = [512, 4096, 16384, 64536, 128000]
+TIERS = [512, 4096, 16384, 65536, 262144, 500_000, 1_000_000]
 
 def nn_tier_factory(size):
     def nn_fn(operands):
@@ -208,7 +208,7 @@ def jit_while(tree, sst_params, sim_params, callables, obstacles, i):
 # MAIN EXECUTION
 # ------------------------------------------------------------------
 
-MAX_TREE_SIZE = 128000
+MAX_TREE_SIZE = 1_000_000
 
 if __name__ == "__main__":
     # --- MuJoCo Setup ---
@@ -216,8 +216,8 @@ if __name__ == "__main__":
     model = mujoco.MjModel.from_xml_path("models/cartpole2d.xml") 
     mjx_model = mjx.put_model(model)
     
-    b = 4096
-    A = 32
+    b = 8*1024
+    A = 2
 
     sim_params = MJXparams(
         motion_constraints=MotionConstraints(max_vel=2.0, min_vel=-2.0, max_accel=10.0, min_accel=-10.0),
@@ -231,10 +231,10 @@ if __name__ == "__main__":
 
     sst_params = SSTparams(
         batch_size=b, δBN=0.1, δs=0.05, decay=0.8,
-        start=Position(x=1.0, y=-jnp.pi, z=0.0), # y is theta here
+        start=Position(x=1.0, y=0.0, z=0.0), # y is theta here
         goal=Position(x=0.0, y=jnp.pi, z=0.0), # y is theta here
         goal_radius=0.4,
-        time_to_evolve=10 # 5 MJX steps per edge
+        time_to_evolve=5 # 5 MJX steps per edge
     )
 
     prop = make_cartpole_propagate(mjx_model)
@@ -276,5 +276,5 @@ if __name__ == "__main__":
 
     # Statistics (Consistent with original script)
     times, iters, sizes = jnp.array(times), jnp.array(iters), jnp.array(sizes)
-    print(f"\nAverage time over {len(times)} runs: {jnp.median(times)*1e3:.3f} ms, {jnp.mean(iters):.2f} iterations, size {jnp.mean(sizes):.2f}")
+    print(f"Median time over {len(times)} runs: {jnp.median(times)*1e3:.3f} ms, {jnp.mean(iters):.2f} iterations, size {jnp.mean(sizes):.2f}")
     print(f"min time: {jnp.min(times)*1e3:.3f} ms, max time: {jnp.max(times)*1e3:.3f} ms")

@@ -1,37 +1,31 @@
 <mujoco model="Cartpole">
   <compiler angle="radian" inertiafromgeom="true"/>
-  
+
   <default>
-    <joint armature="0" damping="0" frictionloss="0" type="hinge"/>
-    <geom contype="0" conaffinity="0" friction="1 0.1 0.1" density="1000"/>
-    <site size="0.01"/>
+    <joint armature="0" damping="0.1" frictionloss="0" type="hinge"/>
+    <geom contype="0" conaffinity="0" density="1000"/>
   </default>
-  
-  <!-- Optimized for MJX performance -->
-  <option 
-    timestep="0.02" 
-    iterations="1" 
-    ls_iterations="4"
-    solver="Newton"
-    jacobian="dense"
-    integrator="Euler"/>
-  
+
+  <option timestep="0.02" integrator="Euler" solver="Newton" iterations="1"/>
+
   <worldbody>
-    <!-- Ground plane with no collision -->
-    <geom name="ground" type="plane" size="0 0 0.1" zaxis="0 0 1" contype="0" conaffinity="0"/>
-    
+    <!-- Ground plane -->
+    <geom type="plane" size="5 5 0.1" contype="0" conaffinity="0"/>
+
+    <!-- Cart -->
     <body name="cart" pos="0 0 0">
-      <joint name="slider" type="slide" axis="1 0 0" pos="0 0 0" range="-4.8 4.8"/>
-      <geom name="cart" type="box" size="0.2 0.1 0.1" mass="1.0"/>
-      
+      <joint name="slider" type="slide" axis="1 0 0" range="-4.8 4.8"/>
+      <geom type="box" size="0.3 0.15 0.1" mass="1.0"/>
+
+      <!-- Pole -->
       <body name="pole" pos="0 0 0">
-        <joint name="hinge" type="hinge" axis="0 1 0" pos="0 0 0"/>
-        <geom name="pole" type="capsule" size="0.02 0.6" pos="0 0 0.6" mass="0.1"/>
+        <joint name="hinge" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" size="0.02 0.5" pos="0 0 0.5" mass="0.1"/>
       </body>
     </body>
   </worldbody>
 
   <actuator>
-    <motor name="force_actuator" joint="slider" ctrlrange="-10.0 10.0"/>
+    <motor name="force_actuator" joint="slider" ctrlrange="-10 10"/>
   </actuator>
 </mujoco>
