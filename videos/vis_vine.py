@@ -2,6 +2,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.animation import FuncAnimation, FFMpegWriter
+from flax import struct
+from params import Position
+from vine.load_env import load_box_config
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from matplotlib.animation import FuncAnimation, FFMpegWriter
+from flax import struct
+from params import Position
+from vine.load_env import load_box_config
 
 def visualize_trajectory(traj_path, obstacles, sst_params, sim_params):
     # 1. Load data
@@ -56,13 +67,12 @@ def visualize_trajectory(traj_path, obstacles, sst_params, sim_params):
     ani = FuncAnimation(fig, update, frames=len(data), interval=50)
     
     # Save as MP4 (Requires ffmpeg installed on system)
-    try:
-        writer = FFMpegWriter(fps=20, metadata=dict(artist='Me'), bitrate=1800)
-        ani.save("videos/vine_growth.mp4", writer=writer)
-        print("Saved to videos/vine_growth.mp4")
-    except Exception as e:
-        print(f"Could not save MP4 (check ffmpeg installation): {e}")
-        plt.show()
+
+    writer = FFMpegWriter(fps=20, metadata=dict(artist='Me'), bitrate=1800)
+    ani.save("videos/vine_growth.mp4", writer=writer)
+    print("Saved to videos/vine_growth.mp4")
+
+
 
 @struct.dataclass
 class VineParams:
@@ -131,4 +141,4 @@ if __name__ == "__main__":
         goal_radius=float(cfg['goal_radius']),
     )
 # Usage
-    visualize_trajectory('videos/vine_traj.npy', obstacles, sst_params, sim_params)
+    visualize_trajectory('vine/vine_traj.npy', obstacles, sst_params, sim_params)
