@@ -82,7 +82,7 @@ def visualize_single_bucket_animation(env_path, current_bucket, history_buckets,
         fig.add_trace(go.Scatter3d(
             x=hx, y=hy, z=hz,
             mode='lines',
-            line=dict(color=f'rgba(50,205,50,{alpha})', width=3),
+            line=dict(color=f'rgba(50,205,50,{alpha})', width=8),
             showlegend=False
         ))
 
@@ -124,7 +124,7 @@ def visualize_single_bucket_animation(env_path, current_bucket, history_buckets,
         fig.add_trace(go.Scatter3d(
             x=[], y=[], z=[], 
             mode='lines',
-            line=dict(color='rgba(50,205,50,1.0)', width=8), # Solid Green
+            line=dict(color='rgba(50,205,50,1.0)', width=10), # Solid Green
             opacity=1.0,
             name="Current Growth"
         ))
