@@ -56,8 +56,8 @@ def visualize_trajectory(traj_path, obstacles, sst_params, sim_params):
     data = data[:558:3]
     last_frame = data[-1]
     first_frame = data[0]
-    pause_first = np.tile(first_frame, (40, 1))
-    pause_frames = np.tile(last_frame, (40, 1))
+    pause_first = np.tile(first_frame, (10, 1))
+    pause_frames = np.tile(last_frame, (20, 1))
     data = np.vstack((pause_first, data, pause_frames))
     # ------------------------------------
 
@@ -211,7 +211,7 @@ def visualize_trajectory(traj_path, obstacles, sst_params, sim_params):
         fig,
         update,
         frames=len(data),
-        interval=50,
+        interval=25,
     )
 
     print("Saving animation as GIF...")
