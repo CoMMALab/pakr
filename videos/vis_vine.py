@@ -49,78 +49,61 @@ def intersect_segment_rect(x1, y1, x2, y2, rect):
 
 
 def visualize_trajectory(traj_path, obstacles, sst_params, sim_params):
-
     data = np.load(traj_path)
-
-    # Only use first 630 frames and every 3rd frame
     data = data[:558:3]
     last_frame = data[-1]
     first_frame = data[0]
     pause_first = np.tile(first_frame, (10, 1))
     pause_frames = np.tile(last_frame, (20, 1))
     data = np.vstack((pause_first, data, pause_frames))
-    # ------------------------------------
 
-    print("Frames used (including pause):", len(data))
-    print("Frames used:", len(data))
-
-    fig, ax = plt.subplots(figsize=(8, 8))
+    # 1. Set Figure background (the area 'outside' the grid) to black
+    fig, ax = plt.subplots(figsize=(8, 8), facecolor='black')
 
     rects = []
     cmap = LinearSegmentedColormap.from_list("obs_gray", ["#404040", "#757575"])
 
     def draw_env():
         rects.clear()
+        
+        # 2. Set the internal grid area to white
+        ax.set_facecolor('white')
+        
+        # Optional: Add a subtle border to the grid so it's defined against the black
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_edgecolor('#333333')
+            spine.set_linewidth(2)
 
         for obs in obstacles:
             x1, y1, x2, y2 = obs
-            width = x2 - x1
-            height = y2 - y1
-
+            width, height = x2 - x1, y2 - y1
             rects.append((x1, y1, x2, y2))
 
-            # gradient fill
             ax.imshow(
                 np.array([[0, 0], [1, 1]]),
                 cmap=cmap,
                 interpolation="bicubic",
                 extent=(x1, x2, y1, y2),
                 aspect="auto",
-                alpha=0.8,
+                alpha=0.9, # Slightly higher alpha to pop against white
                 zorder=1
             )
 
-            # crisp outline
             rect_outline = patches.Rectangle(
-                (x1, y1),
-                width,
-                height,
-                linewidth=1.5,
-                edgecolor="#2b2b2b",
-                facecolor="none",
-                zorder=1.1
+                (x1, y1), width, height,
+                linewidth=1.2, edgecolor="#2b2b2b",
+                facecolor="none", zorder=1.1
             )
             ax.add_patch(rect_outline)
 
-        # start / goal
-        ax.scatter(
-            sst_params.start.x,
-            sst_params.start.y,
-            color="green",
-            s=100,
-            marker="*",
-            zorder=5,
-        )
+        # Start / Goal
+        ax.scatter(sst_params.start.x, sst_params.start.y, 
+                   color="green", s=100, marker="*", zorder=5)
 
         ax.add_patch(
-            patches.Circle(
-                (sst_params.goal.x, sst_params.goal.y),
-                sst_params.goal_radius,
-                color="red",
-                fill=False,
-                linestyle="--",
-                zorder=5,
-            )
+            patches.Circle((sst_params.goal.x, sst_params.goal.y), sst_params.goal_radius,
+                           color="red", fill=False, linestyle="--", zorder=5)
         )
 
         ax.set_xlim(sst_params.min_x, sst_params.max_x)
@@ -130,42 +113,28 @@ def visualize_trajectory(traj_path, obstacles, sst_params, sim_params):
         ax.set_aspect("equal")
 
     def update(frame):
-
+        print(f"Rendering frame {frame}/{len(data)}")
         ax.clear()
         draw_env()
 
-        print(f"Visualizing frame {frame}/{len(data)}")
-
         state = data[frame]
-
         angles = state[3:33]
         tip_len = state[33]
         n_bodies = int(state[34])
 
-        curr_x = sst_params.start.x
-        curr_y = sst_params.start.y
+        curr_x, curr_y = sst_params.start.x, sst_params.start.y
         curr_h = sst_params.start.z
-
-        path = [(curr_x, curr_y)]
-
-        segments = []
+        path, segments = [(curr_x, curr_y)], []
 
         for i in range(sim_params.max_bodies):
-
-            if i < n_bodies:
-                length = sim_params.body_length
-            elif i == n_bodies:
-                length = tip_len
-            else:
-                break
+            length = sim_params.body_length if i < n_bodies else tip_len if i == n_bodies else None
+            if length is None: break
 
             curr_h += angles[i]
-
             next_x = curr_x + length * np.cos(curr_h)
             next_y = curr_y + length * np.sin(curr_h)
 
             hit = False
-
             for rect in rects:
                 ipt = intersect_segment_rect(curr_x, curr_y, next_x, next_y, rect)
                 if ipt is not None:
@@ -174,50 +143,34 @@ def visualize_trajectory(traj_path, obstacles, sst_params, sim_params):
                     hit = True
                     break
 
-            if hit:
-                break
-
+            if hit: break
             path.append((next_x, next_y))
             segments.append((curr_x, curr_y, next_x, next_y))
-
             curr_x, curr_y = next_x, next_y
 
         xs, ys = zip(*path)
+        # Royal blue stands out well on white
+        ax.plot(xs, ys, color="royalblue", linewidth=2.5, zorder=3)
+        ax.scatter(xs[-1], ys[-1], color="blue", s=25, zorder=4)
 
-        ax.plot(xs, ys, color="royalblue", linewidth=2, zorder=3)
-
-        ax.scatter(xs[-1], ys[-1], color="blue", s=20, zorder=4)
-
-        # draw midpoint radius circles
         for x1, y1, x2, y2 in segments:
-
-            mx = 0.5 * (x1 + x2)
-            my = 0.5 * (y1 + y2)
-
-            circ = patches.Circle(
-                (mx, my),
-                sim_params.radius,
-                color="royalblue",
-                alpha=0.15,
-                linewidth=0,
-                zorder=2,
-            )
-
+            mx, my = 0.5 * (x1 + x2), 0.5 * (y1 + y2)
+            circ = patches.Circle((mx, my), sim_params.radius, 
+                                  color="royalblue", alpha=0.1, linewidth=0, zorder=2)
             ax.add_patch(circ)
 
-        ax.set_title(f"Frame: {frame}")
+        # 3. Set text to white (appears on the black figure background)
+        ax.set_title(f"Frame: {frame}", color="white", fontsize=14, pad=15)
 
-    ani = FuncAnimation(
-        fig,
-        update,
-        frames=len(data),
-        interval=25,
-    )
+    ani = FuncAnimation(fig, update, frames=len(data), interval=25)
+    
+    # Set global background color for the save process
+    plt.rcParams['savefig.facecolor'] = 'black'
 
     print("Saving animation as GIF...")
-
+    
+    # Remove 'facecolor' from here—it's handled by the rcParams above
     writer = PillowWriter(fps=20)
-
     ani.save("videos/vine_growth.gif", writer=writer)
 
     print("Successfully saved to videos/vine_growth.gif")
