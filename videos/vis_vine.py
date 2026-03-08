@@ -1,4 +1,6 @@
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from flax import struct
@@ -171,7 +173,7 @@ def visualize_trajectory(traj_path, obstacles, sst_params, sim_params):
     
     # bitrate=1000 to 2000 is usually plenty for 800x800 resolution
     # fps=20 keeps the motion smooth
-    writer = FFMpegWriter(fps=20, bitrate=1500)
+    writer = FFMpegWriter(fps=50, bitrate=1500)
     
     # We use dpi=100 for 800x800, or dpi=50 for 400x400
     ani.save("videos/vine_growth.mp4", writer=writer, dpi=100)

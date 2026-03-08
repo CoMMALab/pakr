@@ -60,6 +60,6 @@ process_buckets(
     bucket_range=range(1, 6), # Buckets 1 through 5
     input_dir="videos",
     output_dir="videos/processed",
-    n=14, 
+    n=30, 
     crop_box=MY_CROP
 )
