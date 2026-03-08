@@ -66,6 +66,27 @@ def visualize_single_bucket_animation(env_path, current_bucket, history_buckets,
 
     fig = go.Figure()
 
+    # 3. Add History Buckets (Static, non-animated)
+    # Tiers: [.6, .4, .2, .1]. Most recent history gets highest opacity.
+    opacity_tiers = [0.6, 0.4, 0.2, 0.1]
+    
+    for idx, bucket in enumerate(reversed(history_buckets)):
+        alpha = opacity_tiers[idx] if idx < len(opacity_tiers) else 0.05
+        hx, hy, hz = [], [], []
+        for traj in bucket:
+            # Use None to tell Plotly to "lift the pen" between lines
+            hx.extend(traj[:, 0].tolist() + [None])
+            hy.extend(traj[:, 1].tolist() + [None])
+            hz.extend(traj[:, 2].tolist() + [None])
+                
+        fig.add_trace(go.Scatter3d(
+            x=hx, y=hy, z=hz,
+            mode='lines',
+            line=dict(color=f'rgba(50,205,50,{alpha})', width=3),
+            showlegend=False
+        ))
+
+
     # 1. Render all obstacles once (REMAINING COMMENTED OUT AS REQUESTED)
     for box in all_trees:
         x, y, z, i, j, k = create_box_mesh(*box)
@@ -95,22 +116,6 @@ def visualize_single_bucket_animation(env_path, current_bucket, history_buckets,
         color='limegreen', opacity=0.6, name='Goal'
     ))
 
-    # 3. Add History Buckets (Static, non-animated)
-    # Tiers: [.6, .4, .2, .1]. Most recent history gets highest opacity.
-    opacity_tiers = [0.6, 0.4, 0.2, 0.1]
-    
-    # We iterate backwards through history_buckets (index -1 is the most recent)
-    for idx, bucket in enumerate(reversed(history_buckets)):
-        # Fallback to 0.05 if we run out of tiers
-        alpha = opacity_tiers[idx] if idx < len(opacity_tiers) else 0.05
-        for traj in bucket:
-            fig.add_trace(go.Scatter3d(
-                x=traj[:, 0], y=traj[:, 1], z=traj[:, 2],
-                mode='lines',
-                line=dict(color=f'rgba(50,205,50,{alpha})', width=3),
-                showlegend=False,
-                hoverinfo='none'
-            ))
 
     # 4. Add initial EMPTY traces for the CURRENT bucket animation
     base_trace_count = len(fig.data) 
@@ -162,7 +167,8 @@ def visualize_single_bucket_animation(env_path, current_bucket, history_buckets,
                 args=[None, {
                     "frame": {"duration": 50, "redraw": True},
                     "fromcurrent": True,
-                    "transition": {"duration": 0}
+                    "transition": {"duration": 0},
+                    "repeat": False
                 }]
             )]
         )]
