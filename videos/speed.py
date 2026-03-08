@@ -57,7 +57,7 @@ def process_buckets(bucket_range, input_dir, output_dir, n, crop_box):
 MY_CROP = (200, 1970, 550, 2400) 
 
 process_buckets(
-    bucket_range=range(1, 2), # Buckets 1 through 5
+    bucket_range=range(1, 6), # Buckets 1 through 5
     input_dir="videos",
     output_dir="videos/processed",
     n=14, 
