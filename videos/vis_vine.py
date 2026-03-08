@@ -4,7 +4,7 @@ import matplotlib.patches as patches
 from flax import struct
 from params import Position
 from vine.load_env import load_box_config
-from matplotlib.animation import FuncAnimation, PillowWriter
+from matplotlib.animation import FuncAnimation, PillowWriter, FFMpegWriter
 from matplotlib.colors import LinearSegmentedColormap
 
 
@@ -167,13 +167,16 @@ def visualize_trajectory(traj_path, obstacles, sst_params, sim_params):
     # Set global background color for the save process
     plt.rcParams['savefig.facecolor'] = 'black'
 
-    print("Saving animation as GIF...")
+    print("Saving animation as MP4...")
     
-    # Remove 'facecolor' from here—it's handled by the rcParams above
-    writer = PillowWriter(fps=20)
-    ani.save("videos/vine_growth.gif", writer=writer)
+    # bitrate=1000 to 2000 is usually plenty for 800x800 resolution
+    # fps=20 keeps the motion smooth
+    writer = FFMpegWriter(fps=20, bitrate=1500)
+    
+    # We use dpi=100 for 800x800, or dpi=50 for 400x400
+    ani.save("videos/vine_growth.mp4", writer=writer, dpi=100)
 
-    print("Successfully saved to videos/vine_growth.gif")
+    print("Successfully saved to videos/vine_growth.mp4")
 
 
 @struct.dataclass
