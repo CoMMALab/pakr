@@ -1,59 +1,64 @@
-# Batched SST for icra submission
+# PAKR: Fast Asymptotically Optimal Kinodynamic Planning via Vectorization
 
-Batched sst with jax for gpu acceleration. Not all parts can be jaxed, details later.
+**IROS 2026** | [Paper](https://arxiv.org/abs/2604.13323) | [Project Page](https://commalab.github.io/pakr)
 
-Compare with baselines: 
+PAKR is a massively parallel kinodynamic planner that uses JAX and the XLA compiler to achieve GPU-accelerated sampling-based planning entirely through standard Python tooling. Combined with the AO-x meta-algorithm, it achieves asymptotic optimality via fast iterative replanning.
 
-    kinoPAX: arxiv.org/abs/2409.06807
-    ompl's non-batched sst: github.com/ompl/ompl
+---
 
-Motion Primitives:
+## Setup
 
-    6d Double Integrator
-    6d Dubin's Airplane
-    12d Quadcopter
-
-Some parts can connect to mujoco/mjx but mujoco is not used for the planner.
-All forward propagation is done with hard-coded physics equations
-
-## Setup and dependencies
-
-python 3.10.18
-jax jaxlib jax-cuda 0.6.2
-flax 0.10.7
-mujoco mjx 3.3.5
-cuda 12.5
-
-to install:
+Build and run the Docker container with GPU access:
 
 ```bash
-micromamba create -n batch_sst python=3.10 jax flax "jaxlib=*=*cuda*" -c conda-forge
-micromamba activate batch_sst
-pip install mujoco mujoco-mjx
+docker build -t pakr .
+docker run --gpus all -it pakr
 ```
 
-## Run examples
+---
 
-## Jax and jitted processes
+## Usage
 
-All forward propagations are jax compatible. Batched rollouts are vmapped. Within each rollout, jax.lax.scan per timestep
+### Basic Run
 
-All helpers are jax compatible (samplers, validators, distance, collistion check) excluding get_obs which uses pandas
+_Placeholder: instructions for running a single planning query._
 
-All params are jax immutable dataclasses and set as static for jit. Most are constants and set in the very beginning. 
-Exceptions are δBN and δs which are updated between sst* iterations, so we store the initial values
+### AO Runs (Asymptotically Optimal)
 
-SSTree is jax compatible. In-place np mutations are replaces with batched jnp.at[].set(). The class itself cannot be passed into jax functions but its
-member functions are jit compiled
+_Placeholder: instructions for running PAKR under the AO-x meta-algorithm with iterative replanning and cost thresholds._
 
-best_nearest, check_dominating_nodes are jax compatible. Advanced indexing (array[indices] with a batch of indices) replaced with jnp.take_along_axis()
+### DynoBench Runs
 
-sst and sst* are not jax compatible. The outer loop includes witness pruning and storing solutions using a heapq. The inner loop has to pass the SSTree object.
-It is still fast because it is manually vectorized
+_Placeholder: instructions for reproducing DynoBench experiments (unicycle, acrobot, quadrotor) and comparisons against iDb-A\* and SST\*._
 
+### MJX Runs
 
+_Placeholder: instructions for running MuJoCo-XLA experiments (cartpole, block push) with the MJX physics backend._
 
-docker build -t mjx .
-docker run --gpus all --rm -it -v $(pwd):/workspace -w /workspace mjx bash
+---
 
-pip install --upgrade "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+## Custom Environments and Dynamics
+
+PAKR is designed to be modular. To define your own system, you replace three core functions:
+
+- **Propagation** — forward-simulates the system given a state and action over a time step
+- **Collision checking** — determines whether a state is valid (obstacle-free)
+- **Distance** — defines the metric used for nearest-neighbor selection in the tree
+
+_Placeholder: detailed instructions and example templates for swapping in custom propagation, checking, and distance functions._
+
+---
+
+## Citation
+
+```bibtex
+@misc{gao2026pakr,
+  title={PAKR: Fast Asymptotically Optimal Kinodynamic Planning via Vectorization},
+  author={Yitian Gao and Andrew Lu and Zachary Kingston},
+  year={2026},
+  eprint={2604.13323},
+  archivePrefix={arXiv},
+  primaryClass={cs.RO},
+  url={https://arxiv.org/abs/2604.13323},
+}
+```
