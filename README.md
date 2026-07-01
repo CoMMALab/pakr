@@ -45,6 +45,7 @@ MJX models are found in ./models. There are only 2 mjx experiments: eeonly, whic
 custom propagator, but can use the mjx models to visualize. To visualize mjx solutions, first run parse_solutions_mjx.py. This reruns the mjx propagator with 
 the solution trajectory and saves each state. This is necessary because the mjx simulator has significantly different outputs compared to the mujoco sim, so 
 we can't just run the solution in mujoco, but we want to use the mujoco viewer (mjx does not have one since everything is batched)
+
 ---
 
 ## Custom Environments and Dynamics
