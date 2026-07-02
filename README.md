@@ -50,13 +50,20 @@ we can't just run the solution in mujoco, but we want to use the mujoco viewer (
 
 ## Custom Environments and Dynamics
 
-PAKR is designed to be modular. To define your own system, you replace three core functions:
+PAKR is designed to be modular. To define your own system, you replace these core functions:
 
 - **Propagation** — forward-simulates the system given a state and action over a time step
-- **Collision checking** — determines whether a state is valid (obstacle-free)
-- **Distance** — defines the metric used for nearest-neighbor selection in the tree
+- **Validation** — determines whether a state is valid. This can mean within joint/vel limits, or collision free if needed
+- **Distance** — defines the metric used for nearest-neighbor selection in the tree.
+- **Sample States** — determines the range of values to sample from for each dim
+- **Sample Actions** — same thing but for valid actions
+- **Goal Condition** — can be as simple as distance < threshold, but sometimes we dont want to check all dimensions
+- **Params** — things such as simulator step size, bounds etc.
+- **Model** — For mjx experiments, create your own xml.
 
-_Placeholder: detailed instructions and example templates for swapping in custom propagation, checking, and distance functions._
+In the files in ./benchmark, all of these custom functions are in the same file. For the original kinopax experiments, these function were in helper.py, with
+value ranges defined in params.py. It's not clean but there are just too many different experiments to make it modular. Easier to just copy paste what's needed 
+so each file is its independent module.
 
 ---
 
