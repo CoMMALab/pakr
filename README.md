@@ -70,13 +70,12 @@ so each file is its independent module.
 ## Citation
 
 ```bibtex
-@misc{gao2026fastasymptoticallyoptimalkinodynamic,
-      title={Fast Asymptotically Optimal Kinodynamic Planning via Vectorization}, 
-      author={Yitian Gao and Andrew Lu and Zachary Kingston},
-      year={2026},
-      eprint={2607.03987},
-      archivePrefix={arXiv},
-      primaryClass={cs.RO},
-      url={https://arxiv.org/abs/2607.03987}, 
+@inproceedings{gao2026fastasymptoticallyoptimalkinodynamic,
+  title={Fast Asymptotically Optimal Kinodynamic Planning via Vectorization}, 
+  author={Gao, Yitian and Lu, Andrew and Kingston, Zachary},
+  booktitle={Proceedings of the IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
+  year={2026},
+  note={To appear},
+  url={https://arxiv.org/abs/2607.03987}
 }
 ```
